@@ -68,6 +68,3 @@ Every alert includes clear explanations such as:
 
 ---
 
-## 🏗️ Architecture Overview
-
-PhishGuard is built as a modular intelligence engine:
