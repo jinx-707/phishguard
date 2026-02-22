@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Threat Intelligence Platform - Test Frontend</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 30px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        
+        .endpoint-section {
+            margin-bottom: 30px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            background: #f9f9f9;
+        }
+        
+        .endpoint-section h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+        
+        .method-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        
+        .method-post {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .method-get {
+            background: #2196f3;
+            color: white;
+        }
+        
+        label {
+            display: block;
+            margin: 10px 0 5px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        input[type="text"],
+        textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        
+        textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        
+        button {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            margin-top: 15px;
+            transition: background 0.3s;
+        }
+        
+        button:hover {
+            background: #5568d3;
+        }
+        
+        button:active {
+            transform: scale(0.98);
+        }
+        
+        #results {
+            margin-top: 30px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            max-height: 500px;
+            overflow-y: auto;
+            display: none;
+        }
+        
+        #results.show {
+            display: block;
+        }
+        
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .results-title {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .clear-btn {
+            padding: 6px 12px;
+            font-size: 14px;
+            background: #f44336;
+        }
+        
+        .clear-btn:hover {
+            background: #d32f2f;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-success {
+            background: #4caf50;
+        }
+        
+        .status-error {
+            background: #f44336;
+        }
+        
+        .config-section {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .config-section label {
+            display: inline-block;
+            margin-right: 10px;
+        }
+        
+        .config-section input {
+            width: 300px;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛡️ Threat Intelligence Platform</h1>
+        <p class="subtitle">Test Frontend for Backend API Validation</p>
+        
+        <div class="config-section">
+            <label for="baseUrl">Backend URL:</label>
+            <input type="text" id="baseUrl" value="http://localhost:8000" />
+        </div>
+        
+        <!-- POST /scan -->
+        <div class="endpoint-section">
+            <h2>
+                <span class="method-badge method-post">POST</span>
+                /api/v1/scan
+            </h2>
+            <form id="scanForm">
+                <label>Text Content:
+                    <textarea name="text" placeholder="Enter suspicious text content"></textarea>
+                </label>
+                
+                <label>URL:
+                    <input type="text" name="url" placeholder="https://example.com" />
+                </label>
+                
+                <label>HTML Content:
+                    <textarea name="html" placeholder="<html>...</html>"></textarea>
+                </label>
+                
+                <label>Metadata (JSON):
+                    <textarea name="meta" placeholder='{"source": "manual_test"}'></textarea>
+                </label>
+                
+                <button type="submit">🔍 Scan for Threats</button>
+            </form>
+        </div>
+        
+        <!-- POST /feedback -->
+        <div class="endpoint-section">
+            <h2>
+                <span class="method-badge method-post">POST</span>
+                /api/v1/feedback
+            </h2>
+            <form id="feedbackForm">
+                <label>Scan ID:
+                    <input type="text" name="scan_id" placeholder="Enter scan ID from previous scan" required />
+                </label>
+                
+                <label>User Flag:
+                    <select name="user_flag" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                        <option value="true">True (Malicious)</option>
+                        <option value="false">False (Benign)</option>
+                    </select>
+                </label>
+                
+                <label>Corrected Label (optional):
+                    <input type="text" name="corrected_label" placeholder="LOW, MEDIUM, or HIGH" />
+                </label>
+                
+                <label>Comment (optional):
+                    <textarea name="comment" placeholder="Additional feedback or comments"></textarea>
+                </label>
+                
+                <button type="submit">📝 Submit Feedback</button>
+            </form>
+        </div>
+        
+        <!-- GET /threat-intel -->
+        <div class="endpoint-section">
+            <h2>
+                <span class="method-badge method-get">GET</span>
+                /api/v1/threat-intel/{domain}
+            </h2>
+            <form id="intelForm">
+                <label>Domain:
+                    <input type="text" name="domain" placeholder="example.com" required />
+                </label>
+                
+                <button type="submit">🔎 Fetch Threat Intel</button>
+            </form>
+        </div>
+        
+        <!-- GET /model-health -->
+        <div class="endpoint-section">
+            <h2>
+                <span class="method-badge method-get">GET</span>
+                /api/v1/model-health
+            </h2>
+            <form id="healthForm">
+                <button type="submit">💚 Check Model Health</button>
+            </form>
+        </div>
+        
+        <!-- Results Display -->
+        <div class="results-header">
+            <div class="results-title">Response:</div>
+            <button class="clear-btn" onclick="clearResults()">Clear</button>
+        </div>
+        <div id="results"></div>
+    </div>
+    
+    <script>
+        const resultsDiv = document.getElementById('results');
+        
+        // Helper function to get base URL
+        function getBaseUrl() {
+            return document.getElementById('baseUrl').value.trim();
+        }
+        
+        // Helper function to make API calls
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            const baseUrl = getBaseUrl();
+            const url = `${baseUrl}${endpoint}`;
+            
+            const options = {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            };
+            
+            if (body) {
+                options.body = JSON.stringify(body);
+            }
+            
+            try {
+                showLoading();
+                console.log(`[${method}] ${url}`, body || '');
+                
+                const response = await fetch(url, options);
+                const data = await response.json();
+                
+                console.log(`Response [${response.status}]:`, data);
+                
+                displayResult(data, response.status, method, endpoint);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${data.detail || 'Unknown error'}`);
+                }
+                
+                return data;
+            } catch (error) {
+                console.error(`Error with ${endpoint}:`, error);
+                displayError(error.message, method, endpoint);
+                throw error;
+            }
+        }
+        
+        // Display loading state
+        function showLoading() {
+            resultsDiv.textContent = '⏳ Loading...';
+            resultsDiv.classList.add('show');
+        }
+        
+        // Display result
+        function displayResult(data, status, method, endpoint) {
+            const statusClass = status >= 200 && status < 300 ? 'status-success' : 'status-error';
+            const timestamp = new Date().toLocaleTimeString();
+            
+            resultsDiv.innerHTML = `<div style="margin-bottom: 10px;">
+                <span class="status-indicator ${statusClass}"></span>
+                <strong>[${timestamp}] ${method} ${endpoint}</strong> - Status: ${status}
+            </div>` + JSON.stringify(data, null, 2);
+            resultsDiv.classList.add('show');
+        }
+        
+        // Display error
+        function displayError(message, method, endpoint) {
+            const timestamp = new Date().toLocaleTimeString();
+            
+            resultsDiv.innerHTML = `<div style="margin-bottom: 10px; color: #f44336;">
+                <span class="status-indicator status-error"></span>
+                <strong>[${timestamp}] ${method} ${endpoint}</strong> - ERROR
+            </div>` + message;
+            resultsDiv.classList.add('show');
+        }
+        
+        // Clear results
+        function clearResults() {
+            resultsDiv.textContent = '';
+            resultsDiv.classList.remove('show');
+        }
+        
+        // Event listeners for forms
+        document.getElementById('scanForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            
+            const body = {
+                text: formData.get('text') || null,
+                url: formData.get('url') || null,
+                html: formData.get('html') || null,
+                meta: formData.get('meta') ? JSON.parse(formData.get('meta')) : {}
+            };
+            
+            // Remove null values
+            Object.keys(body).forEach(key => {
+                if (body[key] === null || body[key] === '') {
+                    delete body[key];
+                }
+            });
+            
+            await apiCall('/api/v1/scan', 'POST', body);
+        });
+        
+        document.getElementById('feedbackForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            
+            const body = {
+                scan_id: formData.get('scan_id'),
+                user_flag: formData.get('user_flag') === 'true',
+                corrected_label: formData.get('corrected_label') || null,
+                comment: formData.get('comment') || null
+            };
+            
+            await apiCall('/api/v1/feedback', 'POST', body);
+        });
+        
+        document.getElementById('intelForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const domain = new FormData(e.target).get('domain');
+            await apiCall(`/api/v1/threat-intel/${encodeURIComponent(domain)}`);
+        });
+        
+        document.getElementById('healthForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await apiCall('/api/v1/model-health');
+        });
+        
+        // Log initial message
+        console.log('🛡️ Threat Intelligence Platform Test Frontend');
+        console.log('Backend URL:', getBaseUrl());
+        console.log('Ready to test API endpoints!');
+    </script>
+</body>
+</html>
