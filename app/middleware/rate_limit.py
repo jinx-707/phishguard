@@ -41,26 +41,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Check rate limit using Redis
         try:
             from app.services.redis import get_redis_client
-            redis = await get_redis_client()
-            
-            # Create rate limit key
-            rate_key = f"rate_limit:{key}:{int(time.time() // self.window)}"
-            
-            # Increment counter
-            current = await redis.incr(rate_key)
-            
-            # Set expiry on first request
-            if current == 1:
-                await redis.expire(rate_key, self.window)
-            
-            # Check if limit exceeded
-            if current > self.rate_limit:
-                logger.warning("Rate limit exceeded", ip=key, count=current)
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Rate limit exceeded. Please try again later.",
-                    headers={"Retry-After": str(self.window)},
-                )
+            async for redis in get_redis_client():
+                # Create rate limit key
+                rate_key = f"rate_limit:{key}:{int(time.time() // self.window)}"
+                
+                # Increment counter
+                current = await redis.incr(rate_key)
+                
+                # Set expiry on first request
+                if current == 1:
+                    await redis.expire(rate_key, self.window)
+                
+                # Check if limit exceeded
+                if current > self.rate_limit:
+                    logger.warning("Rate limit exceeded", ip=key, count=current)
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="Rate limit exceeded. Please try again later.",
+                        headers={"Retry-After": str(self.window)},
+                    )
         except HTTPException:
             raise
         except Exception as e:

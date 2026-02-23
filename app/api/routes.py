@@ -8,6 +8,8 @@ from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+import redis.asyncio as redis
 import structlog
 
 from app.config import settings
@@ -55,6 +57,8 @@ except Exception as e:
 @router.post("/scan", response_model=ScanResponse)
 async def scan(
     request: ScanRequest,
+    db: AsyncSession = Depends(get_db_session),
+    redis: redis.Redis = Depends(get_redis_client),
 ):
     """
     Scan content for threats.
@@ -69,7 +73,6 @@ async def scan(
     input_hash = hashlib.sha256(input_data.encode()).hexdigest()
     
     # Check cache
-    redis = await get_redis_client()
     cached_result = await redis.get(f"scan:{input_hash}")
     if cached_result:
         logger.info("Cache hit", input_hash=input_hash)
@@ -116,6 +119,7 @@ async def scan(
     
     # Persist to database
     await persist_scan(
+        db=db,
         scan_id=scan_id,
         input_hash=input_hash,
         request=request,
@@ -129,6 +133,7 @@ async def scan(
 @router.post("/feedback", response_model=FeedbackResponse)
 async def submit_feedback(
     feedback: FeedbackRequest,
+    db: AsyncSession = Depends(get_db_session),
 ):
     """
     Submit feedback on a scan result.
@@ -142,6 +147,7 @@ async def submit_feedback(
     
     # Persist feedback
     await persist_feedback(
+        db=db,
         feedback_id=feedback_id,
         scan_id=feedback.scan_id,
         user_flag=feedback.user_flag,
@@ -161,6 +167,7 @@ async def submit_feedback(
 @router.get("/threat-intel/{domain}", response_model=ThreatIntelResponse)
 async def get_threat_intel(
     domain: str,
+    db: AsyncSession = Depends(get_db_session),
 ):
     """
     Get threat intelligence for a domain.
@@ -168,7 +175,7 @@ async def get_threat_intel(
     - **domain**: Domain to query
     """
     # Query database for domain intelligence
-    domain_data = await query_domain_intel(domain)
+    domain_data = await query_domain_intel(db, domain)
     
     if not domain_data:
         raise HTTPException(
@@ -180,12 +187,14 @@ async def get_threat_intel(
 
 
 @router.get("/model-health", response_model=ModelHealthResponse)
-async def model_health():
+async def model_health(
+    db: AsyncSession = Depends(get_db_session),
+):
     """
     Get model health metrics.
     """
     # Aggregate metrics from database/logs
-    metrics = await get_model_metrics()
+    metrics = await get_model_metrics(db)
     
     return ModelHealthResponse(**metrics)
 
@@ -240,32 +249,38 @@ async def simulate_ml_inference(content: str, url: Optional[str]) -> float:
     return round(min(score, 0.95), 2)
 
 
-async def persist_scan(scan_id: str, input_hash: str, request: ScanRequest, response: ScanResponse):
+async def persist_scan(
+    db: AsyncSession,
+    scan_id: str,
+    input_hash: str,
+    request: ScanRequest,
+    response: ScanResponse,
+):
     """Persist scan to database."""
     try:
-        async for session in get_db_session():
-            db_scan = DBScan(
-                scan_id=scan_id,
-                input_hash=input_hash,
-                text=request.text,
-                url=request.url,
-                html=request.html,
-                risk=response.risk.value,
-                confidence=response.confidence,
-                graph_score=response.graph_score,
-                model_score=response.model_score,
-                reasons=response.reasons,
-                meta=request.meta or {},
-            )
-            session.add(db_scan)
-            await session.commit()
-            logger.info("Scan persisted", scan_id=scan_id)
-            break
+        db_scan = DBScan(
+            scan_id=scan_id,
+            input_hash=input_hash,
+            text=request.text,
+            url=request.url,
+            html=request.html,
+            risk=response.risk.value,
+            confidence=response.confidence,
+            graph_score=response.graph_score,
+            model_score=response.model_score,
+            reasons=response.reasons,
+            meta=request.meta or {},
+        )
+        db.add(db_scan)
+        await db.commit()
+        logger.info("Scan persisted", scan_id=scan_id)
     except Exception as e:
+        await db.rollback()
         logger.error("Failed to persist scan", error=str(e))
 
 
 async def persist_feedback(
+    db: AsyncSession,
     feedback_id: str,
     scan_id: str,
     user_flag: bool,
@@ -274,58 +289,56 @@ async def persist_feedback(
 ):
     """Persist feedback to database."""
     try:
-        async for session in get_db_session():
-            db_feedback = DBFeedback(
-                scan_id=scan_id,
-                user_flag=user_flag,
-                corrected_label=corrected_label,
-                comment=comment,
-            )
-            session.add(db_feedback)
-            await session.commit()
-            logger.info("Feedback persisted", feedback_id=feedback_id, scan_id=scan_id)
-            break
+        db_feedback = DBFeedback(
+            scan_id=scan_id,
+            user_flag=user_flag,
+            corrected_label=corrected_label,
+            comment=comment,
+        )
+        db.add(db_feedback)
+        await db.commit()
+        logger.info("Feedback persisted", feedback_id=feedback_id, scan_id=scan_id)
     except Exception as e:
+        await db.rollback()
         logger.error("Failed to persist feedback", error=str(e))
 
 
-async def query_domain_intel(domain: str) -> Optional[dict]:
+async def query_domain_intel(db: AsyncSession, domain: str) -> Optional[dict]:
     """Query domain intelligence from database."""
     try:
-        async for session in get_db_session():
-            from sqlalchemy import select
-            from app.models.db import Domain, Relation
+        from sqlalchemy import select
+        from app.models.db import Domain, Relation
+        
+        # Query domain
+        stmt = select(Domain).where(Domain.domain == domain)
+        result = await db.execute(stmt)
+        domain_obj = result.scalar_one_or_none()
+        
+        if domain_obj:
+            # Get relations
+            rel_stmt = select(Relation).where(
+                (Relation.source_domain_id == domain_obj.id) | 
+                (Relation.target_domain_id == domain_obj.id)
+            )
+            rel_result = await db.execute(rel_stmt)
+            relations = rel_result.scalars().all()
             
-            # Query domain
-            stmt = select(Domain).where(Domain.domain == domain)
-            result = await session.execute(stmt)
-            domain_obj = result.scalar_one_or_none()
+            related_domains = []
+            for rel in relations:
+                if rel.source_domain_id == domain_obj.id and rel.target_domain_id:
+                    related_domains.append(rel.target_domain_id)
             
-            if domain_obj:
-                # Get relations
-                rel_stmt = select(Relation).where(
-                    (Relation.source_domain_id == domain_obj.id) | 
-                    (Relation.target_domain_id == domain_obj.id)
-                )
-                rel_result = await session.execute(rel_stmt)
-                relations = rel_result.scalars().all()
-                
-                related_domains = []
-                for rel in relations:
-                    if rel.source_domain_id == domain_obj.id and rel.target_domain_id:
-                        related_domains.append(rel.target_domain_id)
-                
-                return {
-                    "domain": domain_obj.domain,
-                    "risk_score": domain_obj.risk_score,
-                    "is_malicious": domain_obj.is_malicious,
-                    "related_ips": [],
-                    "related_domains": related_domains,
-                    "first_seen": domain_obj.first_seen,
-                    "last_seen": domain_obj.last_seen,
-                    "tags": domain_obj.tags or [],
-                    "metadata": domain_obj.meta or {},
-                }
+            return {
+                "domain": domain_obj.domain,
+                "risk_score": domain_obj.risk_score,
+                "is_malicious": domain_obj.is_malicious,
+                "related_ips": [],
+                "related_domains": related_domains,
+                "first_seen": domain_obj.first_seen,
+                "last_seen": domain_obj.last_seen,
+                "tags": domain_obj.tags or [],
+                "metadata": domain_obj.meta or {},
+            }
     except Exception as e:
         logger.warning(f"Database query failed, using graph service: {e}")
     
@@ -347,26 +360,25 @@ async def query_domain_intel(domain: str) -> Optional[dict]:
     }
 
 
-async def get_model_metrics() -> dict:
+async def get_model_metrics(db: AsyncSession) -> dict:
     """Get model metrics from database."""
     try:
-        async for session in get_db_session():
-            from sqlalchemy import select
-            from app.models.db import ModelMetadata
-            
-            stmt = select(ModelMetadata).where(ModelMetadata.is_active == True)
-            result = await session.execute(stmt)
-            model = result.scalar_one_or_none()
-            
-            if model:
-                return {
-                    "model_name": model.model_name,
-                    "uptime": 99.9,
-                    "total_predictions": model.training_data_size or 10000,
-                    "error_rate": 1.0 - (model.accuracy or 0.95),
-                    "average_latency_ms": 150.0,
-                    "last_retrain": model.last_retrain_date,
-                }
+        from sqlalchemy import select
+        from app.models.db import ModelMetadata
+        
+        stmt = select(ModelMetadata).where(ModelMetadata.is_active == True)
+        result = await db.execute(stmt)
+        model = result.scalar_one_or_none()
+        
+        if model:
+            return {
+                "model_name": model.model_name,
+                "uptime": 99.9,
+                "total_predictions": model.training_data_size or 10000,
+                "error_rate": 1.0 - (model.accuracy or 0.95),
+                "average_latency_ms": 150.0,
+                "last_retrain": model.last_retrain_date,
+            }
     except Exception as e:
         logger.warning(f"Failed to get model metrics: {e}")
     

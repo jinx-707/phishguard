@@ -22,9 +22,12 @@ class Settings(BaseSettings):
     WORKERS: int = 4
     
     # Database
+    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "postgres1234")
+    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "threat_intel")
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/threat_intel"
+        f"postgresql+asyncpg://{os.getenv('POSTGRES_USER', 'postgres')}:{os.getenv('POSTGRES_PASSWORD', 'postgres1234')}@localhost:5432/{os.getenv('POSTGRES_DB', 'threat_intel')}"
     )
     DATABASE_POOL_SIZE: int = 10
     DATABASE_MAX_OVERFLOW: int = 20
@@ -69,6 +72,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"  # Allow extra fields
 
 
 @lru_cache()

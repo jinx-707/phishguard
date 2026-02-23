@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A90E2;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#357ABD;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="8.0" cy="8.0" r="6.0" fill="url(#grad)" stroke="#2C5F8D" stroke-width="2"/>
+  
+  <!-- Shield shape -->
+  <path d="M 8.0 3.2 
+           L 11.2 5.6 
+           L 11.2 9.6 
+           Q 11.2 12.0 8.0 12.8
+           Q 4.8 12.0 4.8 9.6
+           L 4.8 5.6 Z" 
+        fill="white" opacity="0.9"/>
+  
+  <!-- Checkmark -->
+  <path d="M 6.4 8.0 
+           L 7.52 9.6 
+           L 9.92 6.72" 
+        stroke="#4A90E2" stroke-width="1.28" 
+        stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

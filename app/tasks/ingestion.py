@@ -38,46 +38,36 @@ def ingest_feed(self, feed_url: str, feed_type: str = "PHISHING"):
     """
     logger.info("Starting feed ingestion", feed_url=feed_url, feed_type=feed_type)
     
-    # Fetch feed data
-    import asyncio
+    # Use synchronous requests for Celery tasks
+    import requests
     
-    async def fetch_and_process():
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(feed_url, timeout=30) as response:
-                    if response.status != 200:
-                        logger.error(
-                            "Feed fetch failed",
-                            feed_url=feed_url,
-                            status=response.status,
-                        )
-                        return {"status": "failed", "reason": "HTTP error"}
-                    
-                    data = await response.text()
-                    
-                    # Process feed data (implement specific parser based on feed format)
-                    processed = process_feed_data(data, feed_type)
-                    
-                    # Deduplicate and store
-                    stored_count = await store_threat_data(processed)
-                    
-                    return {
-                        "status": "success",
-                        "feed_url": feed_url,
-                        "processed": len(processed),
-                        "stored": stored_count,
-                    }
-            except Exception as e:
-                logger.error("Feed ingestion error", feed_url=feed_url, error=str(e))
-                return {"status": "failed", "reason": str(e)}
-    
-    # Run async function
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    result = loop.run_until_complete(fetch_and_process())
-    loop.close()
-    
-    return result
+    try:
+        response = requests.get(feed_url, timeout=30)
+        if response.status_code != 200:
+            logger.error(
+                "Feed fetch failed",
+                feed_url=feed_url,
+                status=response.status_code,
+            )
+            return {"status": "failed", "reason": "HTTP error"}
+        
+        data = response.text
+        
+        # Process feed data (implement specific parser based on feed format)
+        processed = process_feed_data(data, feed_type)
+        
+        # Deduplicate and store (synchronous version)
+        stored_count = store_threat_data_sync(processed)
+        
+        return {
+            "status": "success",
+            "feed_url": feed_url,
+            "processed": len(processed),
+            "stored": stored_count,
+        }
+    except Exception as e:
+        logger.error("Feed ingestion error", feed_url=feed_url, error=str(e))
+        return {"status": "failed", "reason": str(e)}
 
 
 def process_feed_data(data: str, feed_type: str):
@@ -121,7 +111,7 @@ def process_feed_data(data: str, feed_type: str):
 
 async def store_threat_data(threats: list) -> int:
     """
-    Store threat data in database with deduplication.
+    Store threat data in database with deduplication (async version for non-Celery use).
     
     Args:
         threats: List of threat entries
@@ -130,6 +120,30 @@ async def store_threat_data(threats: list) -> int:
         Number of entries stored
     """
     # This would use SQLAlchemy to insert into the database
+    # Skip duplicates based on hash
+    stored_count = 0
+    
+    for threat in threats:
+        # Check if hash exists in database
+        # If not, insert
+        # For MVP, just count
+        stored_count += 1
+    
+    logger.info("Threat data stored", count=stored_count)
+    return stored_count
+
+
+def store_threat_data_sync(threats: list) -> int:
+    """
+    Store threat data in database with deduplication (sync version for Celery).
+    
+    Args:
+        threats: List of threat entries
+    
+    Returns:
+        Number of entries stored
+    """
+    # This would use synchronous SQLAlchemy to insert into the database
     # Skip duplicates based on hash
     stored_count = 0
     

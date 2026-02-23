@@ -55,7 +55,8 @@ class PhishingPredictor:
             'update', 'payment', 'limited', 'time', 'prize', 'winner',
             'claim', 'congratulations', 'act', 'now', 'alert', 'warning',
             'blocked', 'locked', 'unauthorized', 'fraud', 'bank',
-            'credit', 'account', 'login', 'secure'
+            'credit', 'account', 'login', 'secure', 'won', 'click',
+            'here', 'link', 'suspended', 'terminated'
         ]
         
         self.brand_keywords = [
@@ -181,10 +182,13 @@ class PhishingPredictor:
         # Normalize score
         score = min(score, 1.0)
         
+        # Adjust threshold for better detection
+        is_phishing = score >= 0.4  # Lower threshold for better sensitivity
+        
         return {
             'score': round(score, 3),
-            'is_phishing': score >= 0.5,
-            'confidence': round(score if score >= 0.5 else 1 - score, 3),
+            'is_phishing': is_phishing,
+            'confidence': round(score if is_phishing else 1 - score, 3),
             'reasons': reasons[:5],  # Top 5 reasons
             'method': 'rule_based'
         }

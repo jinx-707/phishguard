@@ -1,20 +1,34 @@
-# PhishGuard Icons
+# PhishGuard Extension Icons
 
-Place your extension icons here:
+## Icon Files
 
-- `icon16.png` - 16x16 pixels (toolbar icon)
-- `icon48.png` - 48x48 pixels (extension management)
-- `icon128.png` - 128x128 pixels (Chrome Web Store)
+- `icon16.svg` - 16x16 toolbar icon
+- `icon48.svg` - 48x48 extension management icon  
+- `icon128.svg` - 128x128 Chrome Web Store icon
 
-## Recommended Design
-- Shield or lock symbol
-- Blue/purple color scheme (matches popup gradient)
-- Simple, recognizable at small sizes
-- Transparent background (PNG format)
+## Design
 
-## Temporary Solution
-Until you add custom icons, you can:
-1. Remove the `icons` field from `manifest.json`, or
-2. Use any PNG files with the correct dimensions
+The PhishGuard icon features:
+- Blue gradient background (security/trust)
+- White shield (protection)
+- Checkmark (verification/safety)
 
-The extension will work without icons, Chrome will use a default placeholder.
+## Usage
+
+These SVG icons are used in the Chrome extension manifest.json.
+For production, convert to PNG format using:
+
+```bash
+# Using Inkscape
+inkscape icon16.svg --export-png=icon16.png -w 16 -h 16
+inkscape icon48.svg --export-png=icon48.png -w 48 -h 48
+inkscape icon128.svg --export-png=icon128.png -w 128 -h 128
+```
+
+## Browser Compatibility
+
+- Chrome/Edge: Supports both SVG and PNG
+- Firefox: Supports both SVG and PNG
+- Safari: PNG recommended
+
+For maximum compatibility, use PNG format in production.

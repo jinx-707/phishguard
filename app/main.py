@@ -7,17 +7,19 @@ import hashlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
-from fastapi import FastAPI, Request, HTTPException, status
+from fastapi import FastAPI, Request, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+import redis.asyncio as redis
 import structlog
 
 from app.config import settings
 from app.api.routes import router as api_router
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.services.database import init_db, close_db
-from app.services.redis import init_redis, close_redis
+from app.services.database import init_db, close_db, get_db_session
+from app.services.redis import init_redis, close_redis, get_redis_client
 from app.services.scoring import compute_final_score
 from app.services.graph import GraphService
 from app.models.db import Scan as DBScan, Feedback as DBFeedback
@@ -78,10 +80,35 @@ async def lifespan(app: FastAPI):
     await init_redis()
     logger.info("Redis initialized")
     
+    # Initialize observability
+    try:
+        from app.services.observability import init_observability
+        init_observability(app)
+        logger.info("Observability initialized")
+    except Exception as e:
+        logger.warning("Observability initialization failed", error=str(e))
+    
+    # Start task scheduler
+    try:
+        from app.tasks.scheduler import start_scheduler
+        start_scheduler()
+        logger.info("Task scheduler started")
+    except Exception as e:
+        logger.warning("Scheduler initialization failed", error=str(e))
+    
     yield
     
     # Shutdown
     logger.info("Shutting down application")
+    
+    # Stop scheduler
+    try:
+        from app.tasks.scheduler import stop_scheduler
+        stop_scheduler()
+        logger.info("Scheduler stopped")
+    except Exception:
+        pass
+    
     await close_redis()
     await close_db()
     logger.info("Application shutdown complete")
@@ -144,10 +171,27 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    from app.services.database import check_database_health
+    from app.services.redis import check_redis_health
+    
+    db_healthy = await check_database_health()
+    redis_healthy = await check_redis_health()
+    
+    status = "healthy" if (db_healthy and redis_healthy) else "degraded"
+    
     return {
-        "status": "healthy",
+        "status": status,
         "version": settings.APP_VERSION,
+        "database": "healthy" if db_healthy else "unhealthy",
+        "redis": "healthy" if redis_healthy else "unhealthy",
     }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint."""
+    from app.services.observability import observability
+    return observability.get_prometheus_metrics()
 
 
 # ============================================
@@ -156,13 +200,15 @@ async def health_check():
 # ============================================
 
 @app.post("/scan")
-async def scan_chrome_extension(request: ChromeExtensionScanRequest):
+async def scan_chrome_extension(
+    request: ChromeExtensionScanRequest,
+    redis: redis.Redis = Depends(get_redis_client),
+    db: AsyncSession = Depends(get_db_session),
+):
     """
     Chrome Extension scan endpoint.
     Compatible with the PhishGuard Chrome Extension.
     """
-    from app.services.redis import get_redis_client
-    
     domain = request.url
     if not domain.startswith('http'):
         domain = f'http://{domain}'
@@ -172,7 +218,6 @@ async def scan_chrome_extension(request: ChromeExtensionScanRequest):
     logger.info(f"Scanning: {domain}")
     
     # Check cache
-    redis = await get_redis_client()
     input_hash = hashlib.sha256(request.url.encode()).hexdigest()
     cached_result = await redis.get(f"scan:{input_hash}")
     if cached_result:
@@ -190,24 +235,22 @@ async def scan_chrome_extension(request: ChromeExtensionScanRequest):
     # Persist to database
     scan_id = str(uuid.uuid4())
     try:
-        from app.services.database import get_db_session
         from app.models.db import RiskLevelEnum
-        async for session in get_db_session():
-            db_scan = DBScan(
-                scan_id=scan_id,
-                input_hash=input_hash,
-                url=request.url,
-                risk=RiskLevelEnum(risk_result.get('risk', 'LOW')),
-                confidence=risk_result.get('confidence', 0.5),
-                graph_score=risk_result.get('infra_gnn_score', 0.0),
-                model_score=risk_result.get('threat_intel_score', 0.0),
-                reasons=risk_result.get('reasons', []),
-                meta={},
-            )
-            session.add(db_scan)
-            await session.commit()
-            break
+        db_scan = DBScan(
+            scan_id=scan_id,
+            input_hash=input_hash,
+            url=request.url,
+            risk=RiskLevelEnum(risk_result.get('risk', 'LOW')),
+            confidence=risk_result.get('confidence', 0.5),
+            graph_score=risk_result.get('infra_gnn_score', 0.0),
+            model_score=risk_result.get('threat_intel_score', 0.0),
+            reasons=risk_result.get('reasons', []),
+            meta={},
+        )
+        db.add(db_scan)
+        await db.commit()
     except Exception as e:
+        await db.rollback()
         logger.error("Failed to persist scan", error=str(e))
     
     logger.info(f"Result: {risk_result['risk']} ({risk_result['confidence']})")
@@ -216,7 +259,10 @@ async def scan_chrome_extension(request: ChromeExtensionScanRequest):
 
 
 @app.post("/feedback")
-async def submit_feedback(data: FeedbackRequest):
+async def submit_feedback(
+    data: FeedbackRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
     """
     Feedback endpoint for Chrome Extension.
     """
@@ -224,18 +270,16 @@ async def submit_feedback(data: FeedbackRequest):
     
     # Persist feedback
     try:
-        from app.services.database import get_db_session
-        async for session in get_db_session():
-            db_feedback = DBFeedback(
-                scan_id=data.scan_id or str(uuid.uuid4()),
-                user_flag=data.user_flag or False,
-                corrected_label=data.corrected_label,
-                comment=data.comment,
-            )
-            session.add(db_feedback)
-            await session.commit()
-            break
+        db_feedback = DBFeedback(
+            scan_id=data.scan_id or str(uuid.uuid4()),
+            user_flag=data.user_flag or False,
+            corrected_label=data.corrected_label,
+            comment=data.comment,
+        )
+        db.add(db_feedback)
+        await db.commit()
     except Exception as e:
+        await db.rollback()
         logger.error("Failed to persist feedback", error=str(e))
     
     return {"success": True}
