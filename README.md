@@ -194,7 +194,6 @@ phishguard/
 ```
 
 ## Configuration
-
 See `.env.example` for available configuration options:
 - `DATABASE_URL` - PostgreSQL connection
 - `REDIS_URL` - Redis connection
@@ -202,5 +201,4 @@ See `.env.example` for available configuration options:
 - `RATE_LIMIT_PER_MINUTE` - API rate limit
 
 ## License
-
 MIT
