@@ -9,7 +9,12 @@ import structlog
 
 from app.config import settings
 from app.tasks.ingestion import ingest_feed, update_graph, recalculate_scores, cleanup_old_scans
-from app.tasks.retraining import monitor_drift, calculate_model_metrics
+from app.tasks.retraining import (
+    monitor_drift,
+    calculate_model_metrics,
+    retrain_zero_day_model,
+    save_isotonic_calibrator,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -74,6 +79,24 @@ def init_scheduler():
         trigger=CronTrigger(day_of_week='sun', hour=1, minute=0),
         id='cleanup',
         name='Cleanup Old Scans',
+        replace_existing=True,
+    )
+
+    # Zero-day IsolationForest retraining - weekly on Sunday at 5 AM
+    scheduler.add_job(
+        schedule_zero_day_retrain,
+        trigger=CronTrigger(day_of_week='sun', hour=5, minute=0),
+        id='zero_day_retrain',
+        name='Zero-Day Model Retrain',
+        replace_existing=True,
+    )
+
+    # Isotonic calibrator refit - weekly on Sunday at 5 AM 30 min
+    scheduler.add_job(
+        schedule_calibrator_save,
+        trigger=CronTrigger(day_of_week='sun', hour=5, minute=30),
+        id='calibrator_save',
+        name='Isotonic Calibrator Save',
         replace_existing=True,
     )
     
@@ -178,12 +201,31 @@ async def schedule_model_metrics():
 async def schedule_cleanup():
     """Schedule cleanup of old scans."""
     logger.info("Triggering cleanup")
-    
     try:
         cleanup_old_scans.delay(days=90)
         logger.info("Cleanup scheduled")
     except Exception as e:
         logger.error("Failed to schedule cleanup", error=str(e))
+
+
+async def schedule_zero_day_retrain():
+    """Retrain IsolationForest zero-day model on latest scan corpus."""
+    logger.info("Triggering zero-day model retrain")
+    try:
+        retrain_zero_day_model.delay()
+        logger.info("Zero-day retrain scheduled")
+    except Exception as e:
+        logger.error("Failed to schedule zero-day retrain", error=str(e))
+
+
+async def schedule_calibrator_save():
+    """Refit and persist the isotonic calibrator from user-labelled data."""
+    logger.info("Triggering calibrator refit")
+    try:
+        save_isotonic_calibrator.delay()
+        logger.info("Calibrator refit scheduled")
+    except Exception as e:
+        logger.error("Failed to schedule calibrator save", error=str(e))
 
 
 async def get_active_feeds():

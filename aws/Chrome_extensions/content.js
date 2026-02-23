@@ -385,4 +385,13 @@
     // Page already loaded
     runPageScan();
   }
+
+  // Listen for messages from popup (for manual rescan)
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.action === 'getPageData') {
+      const payload = extractAllFeatures();
+      sendResponse({ data: payload });
+    }
+    return true;
+  });
 })();

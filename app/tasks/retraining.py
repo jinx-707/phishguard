@@ -116,71 +116,78 @@ def trigger_retraining(self):
     This task prepares data and initiates the retraining pipeline.
     """
     logger.info("Starting retraining trigger")
-    
-    async def prepare_retraining():
-        try:
-            from app.services.database import get_db_session
-            from app.models.db import Scan, Feedback, ModelMetadata
-            from sqlalchemy import select
-            
-            async for session in get_db_session():
-                # Get all scans with feedback
-                stmt = select(Scan).join(Feedback).where(
-                    Feedback.corrected_label.isnot(None)
-                )
-                result = await session.execute(stmt)
-                training_scans = result.scalars().all()
-                
-                if len(training_scans) < 100:
-                    logger.warning("Insufficient training data", count=len(training_scans))
-                    return {
-                        'status': 'insufficient_data',
-                        'count': len(training_scans),
-                    }
-                
-                # Export training data
-                training_data = []
-                for scan in training_scans:
-                    training_data.append({
-                        'text': scan.text or '',
-                        'url': scan.url or '',
-                        'label': scan.feedback.corrected_label if scan.feedback else scan.risk.value,
-                        'timestamp': scan.created_at.isoformat(),
-                    })
-                
-                # Save training data (would export to file or ML service)
-                logger.info("Training data prepared", count=len(training_data))
-                
-                # Update model metadata
-                model_stmt = select(ModelMetadata).where(
-                    ModelMetadata.is_active == True
-                )
-                model_result = await session.execute(model_stmt)
-                model = model_result.scalar_one_or_none()
-                
-                if model:
-                    model.last_retrain_date = datetime.utcnow()
-                    await session.commit()
-                
-                return {
-                    'status': 'triggered',
-                    'training_samples': len(training_data),
-                    'timestamp': datetime.utcnow().isoformat(),
-                }
-        except Exception as e:
-            logger.error("Retraining trigger failed", error=str(e))
-            return {
-                'status': 'failed',
-                'error': str(e),
+
+    # Use synchronous DB engine — avoids asyncio.new_event_loop() in Celery workers
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+    from app.config import settings
+    import json, os
+
+    sync_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+    engine   = create_engine(sync_url, pool_pre_ping=True)
+    Session  = sessionmaker(bind=engine)
+    session  = Session()
+
+    try:
+        rows = session.execute(
+            text("""
+                SELECT s.scan_id, s.text, s.url, s.risk,
+                       f.corrected_label
+                FROM scans s
+                JOIN feedback f ON f.scan_id = s.scan_id
+                WHERE f.corrected_label IS NOT NULL
+                ORDER BY s.created_at DESC
+                LIMIT 5000
+            """)
+        ).fetchall()
+
+        if len(rows) < 100:
+            logger.warning("Insufficient training data", count=len(rows))
+            return {"status": "insufficient_data", "count": len(rows)}
+
+        training_data = [
+            {
+                "text":  row.text or "",
+                "url":   row.url or "",
+                "label": row.corrected_label,
             }
-    
-    # Run async function
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    result = loop.run_until_complete(prepare_retraining())
-    loop.close()
-    
-    return result
+            for row in rows
+        ]
+
+        # Export for external ML pipeline
+        export_path = os.path.join("data", "training_data.json")
+        os.makedirs("data", exist_ok=True)
+        with open(export_path, "w") as f:
+            json.dump(training_data, f, indent=2)
+
+        # Update model metadata
+        session.execute(
+            text(
+                "UPDATE model_metadata SET last_retrain_date = :now "
+                "WHERE is_active = true"
+            ),
+            {"now": datetime.utcnow()},
+        )
+        session.commit()
+        logger.info("Training data exported and metadata updated", count=len(training_data))
+
+        # Also retrain the zero-day IsolationForest on the new data
+        retrain_zero_day_model.delay()
+        # Refit the isotonic calibrator on recent labels
+        save_isotonic_calibrator.delay()
+
+        return {
+            "status":           "triggered",
+            "training_samples": len(training_data),
+            "export_path":      export_path,
+            "timestamp":        datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        session.rollback()
+        logger.error("Retraining trigger failed", error=str(e))
+        return {"status": "failed", "error": str(e)}
+    finally:
+        session.close()
 
 
 @celery_app.task(bind=True, name="export_training_data")
@@ -352,25 +359,136 @@ def calculate_model_metrics(self, days: int = 30):
 @celery_app.task(bind=True, name="ab_test_models")
 def ab_test_models(self, model_a: str, model_b: str, traffic_split: float = 0.5):
     """
-    A/B test two models.
-    
-    Args:
-        model_a: Name of model A
-        model_b: Name of model B
-        traffic_split: Percentage of traffic for model A (0-1)
-    
-    Returns:
-        A/B test configuration
+    A/B test two models by writing the routing config to Redis.
+    The ML inference layer reads `ab_test:config` and splits traffic accordingly.
     """
     logger.info("Setting up A/B test", model_a=model_a, model_b=model_b, split=traffic_split)
-    
-    # This would configure the system to route traffic between models
-    # Store configuration in Redis or database
-    
-    return {
-        'status': 'configured',
-        'model_a': model_a,
-        'model_b': model_b,
-        'traffic_split': traffic_split,
-        'start_time': datetime.utcnow().isoformat(),
-    }
+
+    try:
+        import redis as sync_redis, json
+        r = sync_redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        config = {
+            "model_a":       model_a,
+            "model_b":       model_b,
+            "traffic_split": traffic_split,
+            "start_time":    datetime.utcnow().isoformat(),
+            "active":        True,
+        }
+        r.set("ab_test:config", json.dumps(config))
+        r.close()
+        logger.info("A/B config written to Redis", config=config)
+        return {"status": "configured", **config}
+    except Exception as e:
+        logger.error("A/B test setup failed", error=str(e))
+        return {"status": "failed", "error": str(e)}
+
+
+@celery_app.task(bind=True, name="retrain_zero_day_model",
+                 max_retries=2, autoretry_for=(Exception,))
+def retrain_zero_day_model(self):
+    """
+    Retrain the IsolationForest zero-day anomaly detector on the latest
+    scan text pulled directly from PostgreSQL.
+    """
+    logger.info("Retraining zero-day IsolationForest")
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+    import sys, os, pathlib
+
+    sync_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+    engine   = create_engine(sync_url, pool_pre_ping=True)
+    Session  = sessionmaker(bind=engine)
+    session  = Session()
+
+    texts = []
+    try:
+        rows = session.execute(
+            text("SELECT text, url FROM scans WHERE text IS NOT NULL LIMIT 20000")
+        ).fetchall()
+        texts = [f"{row.text or ''} {row.url or ''}".strip() for row in rows]
+        logger.info("Loaded scan texts for zero-day training", count=len(texts))
+    except Exception as e:
+        logger.warning("Could not load scan texts", error=str(e))
+    finally:
+        session.close()
+
+    # Add zero-day detector to path
+    project_root = pathlib.Path(__file__).resolve().parent.parent.parent
+    ml_path      = str(project_root / "intelligence" / "nlp")
+    if ml_path not in sys.path:
+        sys.path.insert(0, ml_path)
+
+    try:
+        import zero_day_detector as zdd
+        zdd.train(texts=texts if texts else None, save=True)
+        logger.info("Zero-day model retrained and saved")
+        return {"status": "success", "samples": len(texts)}
+    except Exception as e:
+        logger.error("Zero-day retraining failed", error=str(e))
+        return {"status": "failed", "error": str(e)}
+
+
+@celery_app.task(bind=True, name="save_isotonic_calibrator",
+                 max_retries=2, autoretry_for=(Exception,))
+def save_isotonic_calibrator(self):
+    """
+    Fit and persist an IsotonicRegression calibrator on scans that have
+    ground-truth feedback labels, so the scoring engine uses a
+    well-calibrated output probability.
+    """
+    logger.info("Fitting isotonic calibrator")
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
+    import sys, os, pathlib
+
+    sync_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+    engine   = create_engine(sync_url, pool_pre_ping=True)
+    Session  = sessionmaker(bind=engine)
+    session  = Session()
+
+    raw_scores = []
+    true_labels = []
+
+    try:
+        rows = session.execute(
+            text("""
+                SELECT s.confidence, f.corrected_label
+                FROM scans s
+                JOIN feedback f ON f.scan_id = s.scan_id
+                WHERE f.corrected_label IS NOT NULL
+                LIMIT 10000
+            """)
+        ).fetchall()
+
+        for row in rows:
+            raw_scores.append(float(row.confidence))
+            true_labels.append(1.0 if row.corrected_label == "HIGH" else 0.0)
+
+        logger.info("Calibration samples loaded", count=len(raw_scores))
+    except Exception as e:
+        logger.warning("Could not load calibration data", error=str(e))
+    finally:
+        session.close()
+
+    if len(raw_scores) < 20:
+        logger.warning("Insufficient calibration data", count=len(raw_scores))
+        return {"status": "insufficient_data", "count": len(raw_scores)}
+
+    try:
+        from sklearn.isotonic import IsotonicRegression
+        import joblib, numpy as np
+
+        cal = IsotonicRegression(out_of_bounds="clip")
+        cal.fit(raw_scores, true_labels)
+
+        project_root = pathlib.Path(__file__).resolve().parent.parent.parent
+        cal_path     = project_root / "intelligence" / "nlp" / "isotonic_calibrator.joblib"
+        joblib.dump(cal, str(cal_path))
+
+        logger.info("Isotonic calibrator saved", path=str(cal_path), samples=len(raw_scores))
+        return {"status": "success", "samples": len(raw_scores), "path": str(cal_path)}
+    except Exception as e:
+        logger.error("Calibrator fitting failed", error=str(e))
+        return {"status": "failed", "error": str(e)}

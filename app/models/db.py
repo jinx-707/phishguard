@@ -154,8 +154,23 @@ class ThreatFeed(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-# Define indexes for performance
-Index('idx_scans_created_at', Scan.created_at.desc())
-Index('idx_scans_risk', Scan.risk)
-Index('idx_domains_risk_score', Domain.risk_score.desc())
-Index('idx_relations_type', Relation.relation_type)
+class AuditLog(Base):
+    """Security audit trail table."""
+    __tablename__ = "audit_logs"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    event      = Column(String(128), nullable=False, index=True)
+    user_id    = Column(String(128), nullable=True, index=True)
+    ip_address = Column(String(64),  nullable=True)
+    details    = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+# ── Performance Indexes ───────────────────────────────────────────────────────
+Index('idx_scans_created_at',    Scan.created_at.desc())
+Index('idx_scans_risk',          Scan.risk)
+Index('idx_domains_risk_score',  Domain.risk_score.desc())
+Index('idx_relations_type',      Relation.relation_type)
+Index('idx_feedback_scan_date',  Feedback.scan_id, Feedback.created_at.desc())
+Index('idx_audit_event_date',    AuditLog.event, AuditLog.created_at.desc())
+Index('idx_scans_input_hash',    Scan.input_hash)   # dedup lookups
