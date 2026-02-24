@@ -58,3 +58,7 @@ logs/
 # Database
 *.db
 *.sqlite3
+
+# Training datasets
+data/raw/emails/*.csv
+data/meta_training.csv
