@@ -69,7 +69,7 @@ async def test_components():
         response = ScanResponse(
             scan_id="test-123",
             risk=RiskLevel.HIGH,
-            confidence=0.95,
+            0.95,
             reasons=["Test reason"],
             graph_score=0.8,
             model_score=0.9,
