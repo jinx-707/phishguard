@@ -62,3 +62,6 @@ logs/
 # Training datasets
 data/raw/emails/*.csv
 data/meta_training.csv
+# ML datasets
+data/raw/**/*.csv
+data/meta_training.csv
