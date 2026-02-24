@@ -188,3 +188,61 @@ def cleanup_old_scans(self, days: int = 90):
     # Keep feedback for learning
     
     return {"status": "success", "deleted": 0}
+
+
+@celery_app.task(bind=True, name="ingest_external_feeds")
+def ingest_external_feeds(self):
+    """
+    Ingest external IOC (Indicator of Compromise) feeds.
+    Runs every 6 hours via Celery Beat.
+    
+    This task fetches threat data from multiple external sources
+    and stores them in the database for real-time checking.
+    """
+    logger.info("Starting external IOC feed ingestion")
+    
+    import asyncio
+    
+    async def fetch_and_store():
+        from app.services.threat_feeds import fetch_all_threat_feeds
+        from app.services.database import async_session_maker
+        from app.models.threat_indicator import ThreatIndicator
+        
+        # Fetch from all feeds
+        threats = await fetch_all_threat_feeds()
+        
+        if not threats:
+            logger.warning("No threats fetched from feeds")
+            return {"status": "success", "processed": 0, "stored": 0}
+        
+        # Store in database
+        stored_count = 0
+        async with async_session_maker() as session:
+            for threat in threats:
+                try:
+                    indicator = ThreatIndicator(
+                        domain=threat.get('domain'),
+                        indicator_type=threat.get('type', 'domain'),
+                        risk_score=threat.get('confidence', 0.8),
+                        threat_type='phishing',
+                        source=threat.get('source', 'external_feed'),
+                        first_seen=threat.get('first_seen'),
+                        tags=[threat.get('source', 'external')]
+                    )
+                    session.add(indicator)
+                    stored_count += 1
+                except Exception as e:
+                    logger.debug(f"Failed to add threat: {e}")
+            
+            await session.commit()
+        
+        logger.info("External IOC feed ingestion complete", stored=stored_count)
+        return {"status": "success", "processed": len(threats), "stored": stored_count}
+    
+    # Run async function
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(fetch_and_store())
+    loop.close()
+    
+    return result

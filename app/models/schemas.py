@@ -1,7 +1,7 @@
 """
 Pydantic schemas for API request/response models.
 """
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, Dict, List
 from datetime import datetime
 from enum import Enum
@@ -59,6 +59,10 @@ class ScanRequest(BaseModel):
 
 class ScanResponse(BaseModel):
     """Response schema for threat scan results."""
+    model_config = ConfigDict(
+        protected_namespaces=()  # Disables warning for model_* fields
+    )
+    
     scan_id: str = Field(..., description="Unique scan identifier")
     risk: RiskLevel = Field(..., description="Risk level assessment")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score")

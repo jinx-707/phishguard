@@ -1,6 +1,7 @@
 """
 Main FastAPI application entry point.
 """
+import asyncio
 import logging
 import uuid
 import hashlib
@@ -16,10 +17,11 @@ import structlog
 from app.config import settings
 from app.api.routes import router as api_router
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.services.database import init_db, close_db
-from app.services.redis import init_redis, close_redis
+from app.services.database import init_db, close_db, async_session_maker
+from app.services.redis import init_redis, close_redis, get_redis_client
 from app.services.scoring import compute_final_score
 from app.services.graph import GraphService
+from app.services.threat_graph_engine import ThreatGraphEngine
 from app.models.db import Scan as DBScan, Feedback as DBFeedback
 
 # Configure structured logging
@@ -39,6 +41,9 @@ structlog.configure(
 )
 
 logger = structlog.get_logger(__name__)
+
+# Global ThreatGraphEngine instance for Person 3
+threat_engine: Optional[ThreatGraphEngine] = None
 
 
 # Models for root-level endpoints (Chrome Extension compatibility)
@@ -67,8 +72,15 @@ class FeedbackRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup and shutdown events."""
+    global threat_engine
+    
     # Startup
-    logger.info("Starting application", app_name=settings.APP_NAME, version=settings.APP_VERSION)
+    logger.info("Starting application", 
+                app_name=settings.APP_NAME, 
+                version=settings.APP_VERSION,
+                environment=settings.ENVIRONMENT)
+    logger.info(f"Redis URL: {settings.REDIS_URL}")
+    logger.info(f"Database: {settings.DATABASE_URL.split('@')[-1] if '@' in settings.DATABASE_URL else 'local'}")
     
     # Initialize database
     await init_db()
@@ -78,13 +90,53 @@ async def lifespan(app: FastAPI):
     await init_redis()
     logger.info("Redis initialized")
     
+    # Initialize threat feeds (if enabled)
+    try:
+        from app.services.threat_feeds import get_feed_aggregator
+        feed_aggregator = get_feed_aggregator()
+        feed_status = feed_aggregator.get_status()
+        enabled_feeds = [f["name"] for f in feed_status if f["enabled"]]
+        if enabled_feeds:
+            logger.info(f"Threat feeds enabled: {enabled_feeds}")
+            # Initial fetch in background
+            asyncio.create_task(fetch_initial_feeds())
+        else:
+            logger.info("No threat feeds enabled (set OPENPHISH_ENABLED=true etc.)")
+    except Exception as e:
+        logger.warning(f"Threat feeds initialization failed: {e}")
+    
+    # Initialize Person 3 ThreatGraphEngine
+    try:
+        redis_client = await get_redis_client()
+        from app.services.database import engine
+        threat_engine = ThreatGraphEngine(db_pool=engine, redis_client=redis_client)
+        await threat_engine.startup()
+        logger.info("Person 3 ThreatGraphEngine initialized")
+    except Exception as e:
+        logger.warning(f"ThreatGraphEngine initialization failed (will use fallback): {e}")
+        threat_engine = None
+    
     yield
     
     # Shutdown
     logger.info("Shutting down application")
+    if threat_engine:
+        await threat_engine.shutdown()
     await close_redis()
     await close_db()
     logger.info("Application shutdown complete")
+
+
+async def fetch_initial_feeds():
+    """Fetch initial threat feeds in background after startup."""
+    try:
+        from app.services.threat_feeds import get_feed_aggregator
+        await asyncio.sleep(5)  # Wait for app to fully start
+        aggregator = get_feed_aggregator()
+        indicators = await aggregator.fetch_all()
+        logger.info(f"Initial threat feeds fetched: {len(indicators)} indicators")
+    except Exception as e:
+        logger.warning(f"Initial feed fetch failed: {e}")
 
 
 # Create FastAPI application
@@ -263,10 +315,194 @@ async def get_threat_cache():
     }
 
 
+# ============================================
+# Auth Endpoints (for Frontend Dashboard)
+# ============================================
+
+@app.post("/auth/login")
+async def login(request: Request):
+    """
+    Login endpoint for dashboard.
+    """
+    # Simple demo auth - in production use proper JWT
+    body = await request.body()
+    import urllib.parse
+    data = urllib.parse.parse_qs(body.decode())
+    username = data.get('username', [''])[0]
+    password = data.get('password', [''])[0]
+    
+    # Demo credentials
+    if username == "admin" and password == "admin123":
+        # Generate simple token (in production use proper JWT)
+        token = f"demo_token_{username}_{datetime.utcnow().timestamp()}"
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": {
+                "username": username,
+                "full_name": "Admin User",
+                "role": "admin"
+            }
+        }
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+# ============================================
+# Dashboard Endpoints (for Frontend)
+# ============================================
+
+@app.get("/dashboard/summary")
+async def get_dashboard_summary():
+    """Dashboard summary data."""
+    return {
+        "total_threats_blocked_today": 142,
+        "active_campaigns": 8,
+        "zero_day_detections": 3,
+        "endpoints_protected": 1524,
+        "top_targeted_brands": [
+            {"brand": "Microsoft", "attempts": 45},
+            {"brand": "PayPal", "attempts": 32},
+            {"brand": "Amazon", "attempts": 28},
+            {"brand": "Apple", "attempts": 21},
+            {"brand": "Google", "attempts": 18}
+        ],
+        "recent_activity": [
+            {"time": "2 min ago", "event": "paypal-fake.com blocked", "severity": "high"},
+            {"time": "5 min ago", "event": "amazon-verify.net blocked", "severity": "high"},
+            {"time": "12 min ago", "event": "microsoft-login.co blocked", "severity": "medium"}
+        ]
+    }
+
+
+@app.get("/dashboard/live-threats")
+async def get_live_threats(limit: int = 20):
+    """Live threat feed."""
+    return [
+        {
+            "id": "1",
+            "domain": "paypal-verify-account.com",
+            "risk_score": 0.95,
+            "confidence": 0.92,
+            "detection_source": "GNN",
+            "campaign_id": "campaign_001",
+            "timestamp": datetime.utcnow().isoformat()
+        },
+        {
+            "id": "2",
+            "domain": "amazon-order-confirm.net",
+            "risk_score": 0.88,
+            "confidence": 0.85,
+            "detection_source": "INFRA",
+            "campaign_id": "campaign_002",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    ][:limit]
+
+
+@app.get("/dashboard/campaigns")
+async def get_campaigns():
+    """Campaign intelligence."""
+    return [
+        {
+            "campaign_id": "campaign_001",
+            "cluster_size": 12,
+            "avg_risk_score": 0.85,
+            "shared_ip": "192.168.1.100",
+            "shared_cert": "*.ssl.com",
+            "domains": ["paypal-verify.com", "paypal-secure.net", "paypal-login.org"],
+            "first_seen": "2024-01-15T00:00:00Z",
+            "growth_trend": "growing"
+        }
+    ]
+
+
+@app.get("/dashboard/graph")
+async def get_graph_data():
+    """Infrastructure graph data."""
+    return {
+        "nodes": [
+            {"id": "1", "label": "paypal-verify.com", "type": "domain", "risk": 0.9},
+            {"id": "2", "label": "192.168.1.100", "type": "ip", "risk": 0.85},
+            {"id": "3", "label": "amazon-order.net", "type": "domain", "risk": 0.7}
+        ],
+        "edges": [
+            {"source": "1", "target": "2"},
+            {"source": "3", "target": "2"}
+        ]
+    }
+
+
+@app.get("/dashboard/endpoint-stats")
+async def get_endpoint_stats():
+    """Endpoint statistics."""
+    return {
+        "total_endpoints": 1524,
+        "scans_per_minute": 45,
+        "blocked_attempts": 8923,
+        "override_rate": 0.08,
+        "offline_detections": 12
+    }
+
+
+@app.get("/dashboard/risk-trends")
+async def get_risk_trends(days: int = 7):
+    """Risk trend analytics."""
+    return [
+        {"date": "2024-01-15", "blocked_count": 120, "zero_day_count": 2, "new_campaigns": 1},
+        {"date": "2024-01-16", "blocked_count": 145, "zero_day_count": 4, "new_campaigns": 2},
+        {"date": "2024-01-17", "blocked_count": 98, "zero_day_count": 1, "new_campaigns": 0}
+    ][:days]
+
+
+@app.get("/dashboard/investigate/{domain}")
+async def investigate_domain(domain: str):
+    """Domain investigation."""
+    return {
+        "domain": domain,
+        "risk_score": 0.75,
+        "nlp_explanation": "Contains urgency keywords typical of phishing",
+        "dom_indicators": ["Hidden input fields detected", "External links to untrusted domains"],
+        "infra_gnn_score": 0.68,
+        "campaign_id": "campaign_001",
+        "domain_age_days": 5,
+        "whois_summary": {
+            "registrar": "NameCheap",
+            "created_date": "2024-01-10"
+        },
+        "related_domains": [
+            {"domain": "paypal-secure.net", "relation": "same_campaign", "risk": 0.9}
+        ]
+    }
+
+
 # Risk calculation for Chrome Extension
 async def calculate_risk(data: dict, domain: str) -> dict:
-    """Calculate comprehensive risk score."""
+    """Calculate comprehensive risk score using Person 3 ThreatGraphEngine."""
     
+    # Try to use Person 3 ThreatGraphEngine if available
+    if threat_engine and threat_engine._started:
+        try:
+            result = await threat_engine.analyze(domain)
+            threat_result = result.to_dict()
+            
+            combined_score = (threat_result.get("infrastructure_risk_score", 0) + threat_result.get("reputation_risk_score", 0)) / 2
+            
+            return {
+                "risk": "HIGH" if combined_score >= 0.7 else "MEDIUM" if combined_score >= 0.4 else "LOW",
+                "confidence": round(combined_score, 2),
+                "reasons": threat_result.get("reasons", []),
+                "threat_intel_score": round(threat_result.get("reputation_risk_score", 0), 2),
+                "total_score": round(combined_score, 2),
+                "infra_gnn_score": round(threat_result.get("infrastructure_risk_score", 0), 2),
+                "cluster_probability": threat_result.get("cluster_probability", 0),
+                "campaign_id": threat_result.get("campaign_id"),
+                "is_zero_day": threat_result.get("cluster_probability", 0) > 0.5,
+                "gnn_enabled": True
+            }
+        except Exception as e:
+            logger.warning(f"ThreatGraphEngine analysis failed, falling back: {e}")
+    
+    # Fallback to original calculation
     score = 0.0
     reasons = []
     

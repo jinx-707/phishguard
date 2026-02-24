@@ -1,6 +1,7 @@
 /**
  * PhishGuard Enterprise SOC Dashboard
  * React Frontend - Main Dashboard Application
+ * Retro Cyber Arcade Theme
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -10,8 +11,16 @@ import './dashboard.css';
 // API Base URL - uses relative path for proxy support
 const API_BASE = '';
 
-// Colors
-const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'];
+// ============== LOGO COMPONENT ==============
+
+function CyberLogo() {
+  return (
+    <div className="cyber-logo">
+      <div className="logo-text">PHISHGUARD</div>
+      <div className="logo-subtitle">THREAT INTELLIGENCE</div>
+    </div>
+  );
+}
 
 // ============== AUTH CONTEXT ==============
 
@@ -60,31 +69,41 @@ function Login({ onLogin }) {
 
   return (
     <div className="login-container">
+      <CyberLogo />
       <div className="login-box">
-        <h1>🛡️ PhishGuard SOC</h1>
-        <p>Enterprise Threat Intelligence</p>
+        <div className="login-header-decoration">
+          <span className="decorative-bracket">[</span>
+          <span className="login-title">ACCESS TERMINAL</span>
+          <span className="decorative-bracket">]</span>
+        </div>
         
         <form onSubmit={handleSubmit}>
-          <input
-            type="text"
-            placeholder="Username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          {error && <div className="error">{error}</div>}
+          <div className="input-wrapper">
+            <span className="input-prompt">></span>
+            <input
+              type="text"
+              placeholder="USERNAME"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+          </div>
+          <div className="input-wrapper">
+            <span className="input-prompt">></span>
+            <input
+              type="password"
+              placeholder="PASSWORD"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+          {error && <div className="error">ERROR: {error}</div>}
           <button type="submit" disabled={loading}>
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? 'AUTHENTICATING...' : 'INITIATE ACCESS'}
           </button>
         </form>
         
         <div className="demo-credentials">
-          <p>Demo: admin / admin123</p>
+          <p>CREDENTIALS: admin / admin123</p>
         </div>
       </div>
     </div>
@@ -95,20 +114,19 @@ function Login({ onLogin }) {
 
 function Sidebar({ activeView, setActiveView, user, onLogout }) {
   const menuItems = [
-    { id: 'overview', icon: '📊', label: 'Overview' },
-    { id: 'live-threats', icon: '⚡', label: 'Live Threats' },
-    { id: 'campaigns', icon: '🎯', label: 'Campaigns' },
-    { id: 'graph', icon: '🔗', label: 'Infrastructure' },
-    { id: 'endpoints', icon: '💻', label: 'Endpoints' },
-    { id: 'trends', icon: '📈', label: 'Trends' },
-    { id: 'investigate', icon: '🔍', label: 'Investigate' },
+    { id: 'overview', label: '[DASHBOARD]' },
+    { id: 'live-threats', label: '[LIVE THREATS]' },
+    { id: 'campaigns', label: '[CAMPAIGNS]' },
+    { id: 'graph', label: '[INFRASTRUCTURE]' },
+    { id: 'endpoints', label: '[ENDPOINTS]' },
+    { id: 'trends', label: '[TRENDS]' },
+    { id: 'investigate', label: '[INVESTIGATE]' },
   ];
 
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <h2>🛡️ PhishGuard</h2>
-        <span className="badge">SOC</span>
+        <CyberLogo />
       </div>
       
       <nav className="sidebar-nav">
@@ -118,7 +136,6 @@ function Sidebar({ activeView, setActiveView, user, onLogout }) {
             className={`nav-item ${activeView === item.id ? 'active' : ''}`}
             onClick={() => setActiveView(item.id)}
           >
-            <span className="nav-icon">{item.icon}</span>
             <span className="nav-label">{item.label}</span>
           </button>
         ))}
@@ -126,10 +143,11 @@ function Sidebar({ activeView, setActiveView, user, onLogout }) {
       
       <div className="sidebar-footer">
         <div className="user-info">
-          <span className="user-name">{user?.full_name || 'User'}</span>
-          <span className="user-role">{user?.role || 'viewer'}</span>
+          <span className="user-label">USER:</span>
+          <span className="user-name">{user?.full_name || 'ADMIN'}</span>
+          <span className="user-role">{user?.role || 'operator'}</span>
         </div>
-        <button className="logout-btn" onClick={onLogout}>Logout</button>
+        <button className="logout-btn" onClick={onLogout}>[TERMINATE]</button>
       </div>
     </aside>
   );
@@ -140,6 +158,12 @@ function Sidebar({ activeView, setActiveView, user, onLogout }) {
 function OverviewDashboard({ token }) {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     fetch(`${API_BASE}/dashboard/summary`, {
@@ -151,36 +175,36 @@ function OverviewDashboard({ token }) {
       .finally(() => setLoading(false));
   }, [token]);
 
-  if (loading) return <div className="loading">Loading dashboard...</div>;
+  if (loading) return <div className="loading">INITIALIZING DASHBOARD...</div>;
 
   return (
     <div className="dashboard-grid">
       <div className="stat-card primary">
-        <h3>Threats Blocked Today</h3>
-        <div className="stat-value">{summary?.total_threats_blocked_today || 0}</div>
-        <div className="stat-trend positive">↑ 12% from yesterday</div>
+        <h3>[ THREATS BLOCKED TODAY ]</h3>
+        <div className="stat-value">{summary?.total_threats_blocked_today?.toLocaleString() || 0}</div>
+        <div className="stat-trend positive">[+12% FROM YESTERDAY]</div>
       </div>
       
       <div className="stat-card warning">
-        <h3>Active Campaigns</h3>
+        <h3>[ ACTIVE CAMPAIGNS ]</h3>
         <div className="stat-value">{summary?.active_campaigns || 0}</div>
-        <div className="stat-trend">Requires attention</div>
+        <div className="stat-trend">[REQUIRES ATTENTION]</div>
       </div>
       
       <div className="stat-card danger">
-        <h3>Zero-Day Detections</h3>
+        <h3>[ ZERO-DAY DETECTIONS ]</h3>
         <div className="stat-value">{summary?.zero_day_detections || 0}</div>
-        <div className="stat-trend negative">↑ 3 new today</div>
+        <div className="stat-trend negative">[+3 NEW TODAY]</div>
       </div>
       
-      <div className="stat-card info">
-        <h3>Endpoints Protected</h3>
+      <div className="stat-card success">
+        <h3>[ ENDPOINTS PROTECTED ]</h3>
         <div className="stat-value">{summary?.endpoints_protected?.toLocaleString() || 0}</div>
-        <div className="stat-trend positive">↑ 24 this hour</div>
+        <div className="stat-trend positive">[+24 THIS HOUR]</div>
       </div>
 
       <div className="card wide">
-        <h3>🎯 Top Targeted Brands</h3>
+        <h3>> TOP TARGETED BRANDS</h3>
         <div className="brand-list">
           {summary?.top_targeted_brands?.map((brand, i) => (
             <div key={i} className="brand-item">
@@ -191,22 +215,44 @@ function OverviewDashboard({ token }) {
                   style={{ width: `${(brand.attempts / summary.top_targeted_brands[0].attempts) * 100}%` }}
                 />
               </div>
-              <span className="brand-count">{brand.attempts}</span>
+              <span className="brand-count">[{brand.attempts}]</span>
             </div>
           ))}
         </div>
       </div>
 
       <div className="card wide">
-        <h3>📋 Recent Activity</h3>
+        <h3>> RECENT ACTIVITY LOG</h3>
         <div className="activity-list">
           {summary?.recent_activity?.map((activity, i) => (
             <div key={i} className={`activity-item ${activity.severity}`}>
-              <span className="activity-time">{activity.time}</span>
+              <span className="activity-time">[{activity.time}]</span>
               <span className="activity-event">{activity.event}</span>
-              <span className={`severity-badge ${activity.severity}`}>{activity.severity}</span>
+              <span className={`severity-badge ${activity.severity}`}>{activity.severity.toUpperCase()}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="card wide">
+        <h3>> SYSTEM STATUS</h3>
+        <div className="system-status">
+          <div className="status-row">
+            <span className="status-label">SYSTEM TIME:</span>
+            <span className="status-value">{currentTime.toISOString().slice(0, 19).replace('T', ' ')}</span>
+          </div>
+          <div className="status-row">
+            <span className="status-label">API STATUS:</span>
+            <span className="status-value online">[ONLINE]</span>
+          </div>
+          <div className="status-row">
+            <span className="status-label">SCAN ENGINE:</span>
+            <span className="status-value online">[ACTIVE]</span>
+          </div>
+          <div className="status-row">
+            <span className="status-label">THREAT DB:</span>
+            <span className="status-value online">[UPDATED]</span>
+          </div>
         </div>
       </div>
     </div>
@@ -218,6 +264,7 @@ function OverviewDashboard({ token }) {
 function LiveThreats({ token }) {
   const [threats, setThreats] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [lastUpdate, setLastUpdate] = useState(new Date());
 
   const fetchThreats = useCallback(async () => {
     try {
@@ -226,6 +273,7 @@ function LiveThreats({ token }) {
       });
       const data = await res.json();
       setThreats(data);
+      setLastUpdate(new Date());
     } catch (err) {
       console.error(err);
     } finally {
@@ -235,7 +283,7 @@ function LiveThreats({ token }) {
 
   useEffect(() => {
     fetchThreats();
-    const interval = setInterval(fetchThreats, 5000);
+    const interval = setInterval(fetchThreats, 3000);
     return () => clearInterval(interval);
   }, [fetchThreats]);
 
@@ -244,25 +292,26 @@ function LiveThreats({ token }) {
     return colors[source] || '#6b7280';
   };
 
-  if (loading) return <div className="loading">Loading threats...</div>;
+  if (loading) return <div className="loading">LOADING THREAT FEED...</div>;
 
   return (
     <div className="live-threats">
       <div className="section-header">
-        <h2>⚡ Live Threat Feed</h2>
-        <span className="live-indicator">● Live</span>
+        <h2>> LIVE THREAT FEED</h2>
+        <span className="live-indicator">SCANNING</span>
+        <span className="last-update">LAST UPDATE: {lastUpdate.toLocaleTimeString()}</span>
       </div>
       
       <div className="threats-table">
         <table>
           <thead>
             <tr>
-              <th>Domain</th>
-              <th>Risk Score</th>
-              <th>Confidence</th>
-              <th>Source</th>
-              <th>Campaign</th>
-              <th>Time</th>
+              <th>> DOMAIN</th>
+              <th>> RISK SCORE</th>
+              <th>> CONFIDENCE</th>
+              <th>> SOURCE</th>
+              <th>> CAMPAIGN</th>
+              <th>> TIMESTAMP</th>
             </tr>
           </thead>
           <tbody>
@@ -289,7 +338,7 @@ function LiveThreats({ token }) {
                     {threat.detection_source}
                   </span>
                 </td>
-                <td>{threat.campaign_id || '-'}</td>
+                <td>{threat.campaign_id || '--'}</td>
                 <td className="time-cell">{new Date(threat.timestamp).toLocaleTimeString()}</td>
               </tr>
             ))}
@@ -316,11 +365,11 @@ function CampaignsView({ token }) {
       .finally(() => setLoading(false));
   }, [token]);
 
-  if (loading) return <div className="loading">Loading campaigns...</div>;
+  if (loading) return <div className="loading">LOADING CAMPAIGN DATA...</div>;
 
   return (
     <div className="campaigns-view">
-      <h2>🎯 Campaign Intelligence</h2>
+      <h2>> CAMPAIGN INTELLIGENCE</h2>
       
       <div className="campaigns-grid">
         {campaigns.map(campaign => (
@@ -328,47 +377,47 @@ function CampaignsView({ token }) {
             <div className="campaign-header">
               <h3>{campaign.campaign_id}</h3>
               <span className={`trend-badge ${campaign.growth_trend}`}>
-                {campaign.growth_trend === 'growing' ? '📈' : '➡️'}
+                {campaign.growth_trend === 'growing' ? '[GROWING]' : '[STABLE]'}
               </span>
             </div>
             
             <div className="campaign-stats">
               <div className="campaign-stat">
-                <span className="stat-label">Cluster Size</span>
-                <span className="stat-value">{campaign.cluster_size} domains</span>
+                <span className="stat-label">CLUSTER SIZE</span>
+                <span className="stat-value">{campaign.cluster_size} DOMAINS</span>
               </div>
               <div className="campaign-stat">
-                <span className="stat-label">Avg Risk</span>
+                <span className="stat-label">AVG RISK</span>
                 <span className="stat-value">{(campaign.avg_risk_score * 100).toFixed(0)}%</span>
               </div>
             </div>
             
             <div className="campaign-infra">
-              <h4>Shared Infrastructure</h4>
+              <h4>> SHARED INFRASTRUCTURE</h4>
               <div className="infra-item">
                 <span className="infra-label">IP:</span>
                 <span className="infra-value">{campaign.shared_ip}</span>
               </div>
               <div className="infra-item">
-                <span className="infra-label">Cert:</span>
+                <span className="infra-label">CERT:</span>
                 <span className="infra-value">{campaign.shared_cert}</span>
               </div>
             </div>
             
             <div className="campaign-domains">
-              <h4>Domains ({campaign.domains.length})</h4>
+              <h4>> DOMAINS ({campaign.domains.length})</h4>
               <ul>
                 {campaign.domains.slice(0, 3).map((domain, i) => (
                   <li key={i}>{domain}</li>
                 ))}
                 {campaign.domains.length > 3 && (
-                  <li className="more">+{campaign.domains.length - 3} more</li>
+                  <li className="more">+{campaign.domains.length - 3} MORE</li>
                 )}
               </ul>
             </div>
             
             <div className="campaign-footer">
-              <span className="first-seen">First seen: {new Date(campaign.first_seen).toLocaleDateString()}</span>
+              <span className="first-seen">FIRST SEEN: {new Date(campaign.first_seen).toLocaleDateString()}</span>
             </div>
           </div>
         ))}
@@ -400,9 +449,8 @@ function InfrastructureGraph({ token }) {
     return '#22c55e';
   };
 
-  if (loading) return <div className="loading">Loading graph...</div>;
+  if (loading) return <div className="loading">LOADING INFRASTRUCTURE MAP...</div>;
 
-  // Simple force-directed layout
   const nodes = graphData?.nodes?.map((node, i) => ({
     ...node,
     x: 100 + (i % 4) * 200,
@@ -411,11 +459,17 @@ function InfrastructureGraph({ token }) {
 
   return (
     <div className="graph-view">
-      <h2>🔗 Infrastructure Graph</h2>
+      <h2>> INFRASTRUCTURE GRAPH</h2>
       
       <div className="graph-container">
         <svg viewBox="0 0 800 600" className="graph-svg">
-          {/* Edges */}
+          <defs>
+            <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#0B2A2A" strokeWidth="1"/>
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#grid)" />
+          
           {graphData?.edges?.map((edge, i) => {
             const source = nodes.find(n => n.id === edge.source);
             const target = nodes.find(n => n.id === edge.target);
@@ -425,14 +479,13 @@ function InfrastructureGraph({ token }) {
                 key={i}
                 x1={source.x} y1={source.y}
                 x2={target.x} y2={target.y}
-                stroke="#64748b"
+                stroke="#39FF14"
                 strokeWidth="2"
-                strokeOpacity="0.5"
+                strokeOpacity="0.3"
               />
             );
           })}
           
-          {/* Nodes */}
           {nodes.map(node => (
             <g 
               key={node.id} 
@@ -443,7 +496,7 @@ function InfrastructureGraph({ token }) {
               <circle
                 r={node.type === 'domain' ? 25 : 20}
                 fill={getNodeColor(node.type, node.risk)}
-                stroke="#fff"
+                stroke="#39FF14"
                 strokeWidth="2"
               />
               <text 
@@ -468,24 +521,24 @@ function InfrastructureGraph({ token }) {
 
       {selectedNode && (
         <div className="node-details">
-          <h3>Node Details</h3>
+          <h3>> NODE DETAILS</h3>
           <div className="detail-row">
             <span className="label">ID:</span>
             <span className="value">{selectedNode.id}</span>
           </div>
           <div className="detail-row">
-            <span className="label">Label:</span>
+            <span className="label">LABEL:</span>
             <span className="value">{selectedNode.label}</span>
           </div>
           <div className="detail-row">
-            <span className="label">Type:</span>
+            <span className="label">TYPE:</span>
             <span className="value">{selectedNode.type}</span>
           </div>
           <div className="detail-row">
-            <span className="label">Risk:</span>
+            <span className="label">RISK:</span>
             <span className="value">{(selectedNode.risk * 100).toFixed(0)}%</span>
           </div>
-          <button onClick={() => setSelectedNode(null)}>Close</button>
+          <button onClick={() => setSelectedNode(null)}>[CLOSE]</button>
         </div>
       )}
     </div>
@@ -508,50 +561,50 @@ function EndpointsView({ token }) {
       .finally(() => setLoading(false));
   }, [token]);
 
-  if (loading) return <div className="loading">Loading endpoint stats...</div>;
+  if (loading) return <div className="loading">LOADING ENDPOINT STATS...</div>;
 
   return (
     <div className="endpoints-view">
-      <h2>💻 Endpoint Statistics</h2>
+      <h2>> ENDPOINT STATISTICS</h2>
       
       <div className="endpoint-grid">
         <div className="endpoint-stat">
-          <div className="stat-icon">🖥️</div>
+          <div className="stat-icon">[SYS]</div>
           <div className="stat-info">
             <span className="stat-value">{stats?.total_endpoints?.toLocaleString()}</span>
-            <span className="stat-label">Total Endpoints</span>
+            <span className="stat-label">TOTAL ENDPOINTS</span>
           </div>
         </div>
         
         <div className="endpoint-stat">
-          <div className="stat-icon">⚡</div>
+          <div className="stat-icon">[SCAN]</div>
           <div className="stat-info">
             <span className="stat-value">{stats?.scans_per_minute}</span>
-            <span className="stat-label">Scans/Minute</span>
+            <span className="stat-label">SCANS/MINUTE</span>
           </div>
         </div>
         
         <div className="endpoint-stat danger">
-          <div className="stat-icon">🚫</div>
+          <div className="stat-icon">[BLK]</div>
           <div className="stat-info">
             <span className="stat-value">{stats?.blocked_attempts?.toLocaleString()}</span>
-            <span className="stat-label">Blocked Attempts</span>
+            <span className="stat-label">BLOCKED ATTEMPTS</span>
           </div>
         </div>
         
         <div className="endpoint-stat warning">
-          <div className="stat-icon">⚠️</div>
+          <div className="stat-icon">[OVR]</div>
           <div className="stat-info">
             <span className="stat-value">{(stats?.override_rate * 100).toFixed(1)}%</span>
-            <span className="stat-label">Override Rate</span>
+            <span className="stat-label">OVERRIDE RATE</span>
           </div>
         </div>
         
         <div className="endpoint-stat info">
-          <div className="stat-icon">📴</div>
+          <div className="stat-icon">[OFF]</div>
           <div className="stat-info">
             <span className="stat-value">{stats?.offline_detections}</span>
-            <span className="stat-label">Offline Detections</span>
+            <span className="stat-label">OFFLINE DETECTIONS</span>
           </div>
         </div>
       </div>
@@ -575,41 +628,43 @@ function TrendsView({ token }) {
       .finally(() => setLoading(false));
   }, [token]);
 
-  if (loading) return <div className="loading">Loading trends...</div>;
+  if (loading) return <div className="loading">LOADING TRENDS...</div>;
+
+  const COLORS = ['#39FF14', '#00FF9C', '#00D4FF', '#FF073A', '#FFE135', '#FF6B35'];
 
   return (
     <div className="trends-view">
-      <h2>📈 Risk Trend Analytics</h2>
+      <h2>> RISK TREND ANALYTICS</h2>
       
       <div className="charts-grid">
         <div className="chart-card">
-          <h3>Daily Blocked Attempts</h3>
+          <h3>> DAILY BLOCKED ATTEMPTS</h3>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={trends}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" tick={{fontSize: 12}} />
-              <YAxis />
-              <Tooltip />
-              <Line type="monotone" dataKey="blocked_count" stroke="#ef4444" strokeWidth={2} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#0B2A2A" />
+              <XAxis dataKey="date" tick={{fontSize: 12, fill: '#39FF14'}} stroke="#39FF14" />
+              <YAxis tick={{fontSize: 12, fill: '#39FF14'}} stroke="#39FF14" />
+              <Tooltip contentStyle={{ backgroundColor: '#020617', border: '1px solid #39FF14', color: '#39FF14' }} />
+              <Line type="monotone" dataKey="blocked_count" stroke="#39FF14" strokeWidth={2} dot={{fill: '#39FF14'}} />
             </LineChart>
           </ResponsiveContainer>
         </div>
         
         <div className="chart-card">
-          <h3>Zero-Day Detections</h3>
+          <h3>> ZERO-DAY DETECTIONS</h3>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={trends}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" tick={{fontSize: 12}} />
-              <YAxis />
-              <Tooltip />
-              <Bar dataKey="zero_day_count" fill="#f97316" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#0B2A2A" />
+              <XAxis dataKey="date" tick={{fontSize: 12, fill: '#FF073A'}} stroke="#FF073A" />
+              <YAxis tick={{fontSize: 12, fill: '#FF073A'}} stroke="#FF073A" />
+              <Tooltip contentStyle={{ backgroundColor: '#020617', border: '1px solid #FF073A', color: '#FF073A' }} />
+              <Bar dataKey="zero_day_count" fill="#FF073A" />
             </BarChart>
           </ResponsiveContainer>
         </div>
         
         <div className="chart-card">
-          <h3>Campaign Distribution</h3>
+          <h3>> CAMPAIGN DISTRIBUTION</h3>
           <ResponsiveContainer width="100%" height={300}>
             <PieChart>
               <Pie
@@ -619,13 +674,14 @@ function TrendsView({ token }) {
                 cx="50%"
                 cy="50%"
                 outerRadius={80}
+                label={{ fill: '#39FF14' }}
               >
                 {trends.map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                 ))}
               </Pie>
-              <Tooltip />
-              <Legend />
+              <Tooltip contentStyle={{ backgroundColor: '#020617', border: '1px solid #39FF14', color: '#39FF14' }} />
+              <Legend wrapperStyle={{ color: '#39FF14' }} />
             </PieChart>
           </ResponsiveContainer>
         </div>
@@ -661,17 +717,20 @@ function InvestigateView({ token }) {
 
   return (
     <div className="investigate-view">
-      <h2>🔍 Alert Investigation</h2>
+      <h2>> ALERT INVESTIGATION</h2>
       
       <form className="search-form" onSubmit={handleSearch}>
-        <input
-          type="text"
-          placeholder="Enter domain to investigate..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
+        <div className="search-input-wrapper">
+          <span className="search-prompt">></span>
+          <input
+            type="text"
+            placeholder="ENTER DOMAIN TO INVESTIGATE..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+        </div>
         <button type="submit" disabled={loading}>
-          {loading ? 'Investigating...' : 'Investigate'}
+          {loading ? 'ANALYZING...' : '[INVESTIGATE]'}
         </button>
       </form>
 
@@ -683,18 +742,18 @@ function InvestigateView({ token }) {
               backgroundColor: investigation.risk_score > 0.7 ? '#ef4444' : 
                              investigation.risk_score > 0.4 ? '#f97316' : '#22c55e'
             }}>
-              Risk: {(investigation.risk_score * 100).toFixed(0)}%
+              RISK: {(investigation.risk_score * 100).toFixed(0)}%
             </div>
           </div>
 
           <div className="investigation-grid">
             <div className="investigation-card">
-              <h4>🧠 NLP Analysis</h4>
+              <h4>> NLP ANALYSIS</h4>
               <p>{investigation.nlp_explanation}</p>
             </div>
 
             <div className="investigation-card">
-              <h4>🌐 DOM Indicators</h4>
+              <h4>> DOM INDICATORS</h4>
               <ul>
                 {investigation.dom_indicators.map((indicator, i) => (
                   <li key={i}>{indicator}</li>
@@ -703,41 +762,41 @@ function InvestigateView({ token }) {
             </div>
 
             <div className="investigation-card">
-              <h4>🔗 Infrastructure (GNN)</h4>
+              <h4>> INFRASTRUCTURE (GNN)</h4>
               <div className="infra-score">
-                <span>GNN Score:</span>
+                <span>GNN SCORE:</span>
                 <span className="score">{(investigation.infra_gnn_score * 100).toFixed(0)}%</span>
               </div>
               <div className="campaign-info">
-                <span>Campaign:</span>
-                <span className="campaign-id">{investigation.campaign_id || 'None'}</span>
+                <span>CAMPAIGN:</span>
+                <span className="campaign-id">{investigation.campaign_id || 'NONE'}</span>
               </div>
             </div>
 
             <div className="investigation-card">
-              <h4>📅 Domain Info</h4>
+              <h4>> DOMAIN INFO</h4>
               <div className="info-row">
-                <span>Age:</span>
-                <span>{investigation.domain_age_days} days</span>
+                <span>AGE:</span>
+                <span>{investigation.domain_age_days} DAYS</span>
               </div>
               <div className="info-row">
-                <span>Registrar:</span>
+                <span>REGISTRAR:</span>
                 <span>{investigation.whois_summary?.registrar}</span>
               </div>
               <div className="info-row">
-                <span>Created:</span>
+                <span>CREATED:</span>
                 <span>{investigation.whois_summary?.created_date}</span>
               </div>
             </div>
 
             <div className="investigation-card wide">
-              <h4>🔗 Related Domains</h4>
+              <h4>> RELATED DOMAINS</h4>
               <table>
                 <thead>
                   <tr>
-                    <th>Domain</th>
-                    <th>Relation</th>
-                    <th>Risk</th>
+                    <th>> DOMAIN</th>
+                    <th>> RELATION</th>
+                    <th>> RISK</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -817,11 +876,11 @@ function App() {
       />
       <main className="main-content">
         <header className="main-header">
-          <h1>{activeView.replace('-', ' ').toUpperCase()}</h1>
+          <h1>> {activeView.toUpperCase().replace('-', ' ')}</h1>
           <div className="header-actions">
             <span className="status-indicator">
               <span className="status-dot"></span>
-              System Online
+              SYSTEM ONLINE
             </span>
           </div>
         </header>
@@ -834,4 +893,3 @@ function App() {
 }
 
 export default App;
-

@@ -4,8 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PhishGuard SOC Dashboard</title>
+    
+    <!-- Preconnect to Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- Load fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <style>
+      /* Critical CSS for initial load */
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body, #root { height: 100%; }
+      body {
+        background: #071021;
+        font-family: 'Share Tech Mono', monospace;
+      }
+    </style>
   </head>
   <body>
+    <!-- Scanlines overlay -->
+    <div class="scanlines"></div>
+    <!-- CRT Grid Background -->
+    <div class="crt-background"></div>
+    
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

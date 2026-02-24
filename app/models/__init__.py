@@ -17,6 +17,7 @@ from app.models.db import (
     Relation,
     ModelMetadata,
 )
+from app.models.threat_indicator import ThreatIndicator, ThreatTypeEnum
 
 __all__ = [
     # Schemas
@@ -33,4 +34,6 @@ __all__ = [
     "Domain",
     "Relation",
     "ModelMetadata",
+    "ThreatIndicator",
+    "ThreatTypeEnum",
 ]
