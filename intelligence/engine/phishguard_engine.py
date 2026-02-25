@@ -1,142 +1,207 @@
-from intelligence.nlp.explain_prediction import explain_email
+from pathlib import Path
+import json
+import csv
+from datetime import datetime, UTC
+import tldextract
+
+from intelligence.engine.ml_runner import run_ml, run_meta_model
+from intelligence.engine.attribution import build_attributions
 from intelligence.web.url_checks import analyze_url
 from intelligence.web.html_inspector import detect_login_form
 from intelligence.web.brand_detector import detect_brand_impersonation
-from intelligence.nlp.zero_day_detector import is_anomalous
-from intelligence.engine.health import health_check 
+from intelligence.web.brand_risk import brand_risk_score
+from intelligence.nlp.zero_day_detector import get_anomaly_score
 
-import json
-from pathlib import Path
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "security_policy.json"
+# ---------------- BASE PATH ---------------- #
 
-with open(CONFIG_PATH, "r") as f:
+BASE_PATH = Path(__file__).resolve().parents[2]
+
+# ---------------- CONFIG ---------------- #
+
+META_LOG_PATH = BASE_PATH / "data" / "meta_training.csv"
+
+with open(BASE_PATH / "config" / "trusted_domains.json") as f:
+    TRUSTED_DOMAINS = json.load(f)
+
+with open(BASE_PATH / "config" / "security_policy.json") as f:
     SECURITY_POLICY = json.load(f)
 
-
-# ---------------- POLICY ---------------- #
-
-def decide_action(risk_score):
-    if risk_score >= SECURITY_POLICY["block_threshold"]:
-        return "block"
-    elif risk_score >= SECURITY_POLICY["warn_threshold"]:
-        return "warn"
-    else:
-        return "allow"
+with open(BASE_PATH / "config" / "thresholds.json") as f:
+    THRESHOLDS = json.load(f)
 
 
-# ---------------- HUMAN EXPLAINABILITY ---------------- #
+# ---------------- META LOGGER ---------------- #
 
-def humanize_reasons(reasons):
-    mapping = {
-        "Phishing language detected": "This message uses urgent or threatening language commonly seen in phishing.",
-        "Zero-day anomaly detected": "This message does not resemble typical legitimate communication patterns.",
-        "Login form detected": "This page contains a password input field, which may be used to steal credentials.",
-        "Brand impersonation detected": "This page pretends to be a trusted brand but is hosted on an unrelated domain.",
-        "Suspicious TLD: .tk": "This website uses a high-risk domain often associated with scams.",
-        "Contains keyword: verify": "The page urges account verification, a common phishing tactic.",
-        "Contains keyword: login": "The page prompts users to log in, which may indicate credential harvesting.",
-        "Contains keyword: secure": "The page uses security-related language to create false trust.",
-        "Contains keyword: account": "The page references user accounts, a frequent phishing lure."
+META_COLUMNS = [
+    "risk_score",
+    "ml_prob",
+    "zero_day_score",
+    "sms_risk",
+    "brand_impersonation",
+    "brand_confidence",
+    "login_form",
+    "suspicious_url_score",
+    "is_trusted_domain",
+    "label",
+    "source",
+    "timestamp"
+]
+
+
+def log_meta_sample(features, label, source):
+    row = {
+        k: float(features.get(k, 0.0))
+        for k in META_COLUMNS
+        if k not in ["label", "source", "timestamp"]
     }
 
-    return [mapping.get(r, r) for r in reasons]
+    row["label"] = int(label)
+    row["source"] = source
+    row["timestamp"] = datetime.now(UTC).isoformat()
+
+    file_exists = META_LOG_PATH.exists()
+
+    with open(META_LOG_PATH, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=META_COLUMNS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
-# ---------------- EMAIL ANALYSIS ---------------- #
+# ---------------- SMS HEURISTIC ---------------- #
 
-def analyze_email(email_text):
-    nlp_result = explain_email(email_text)
-    anomaly = (
-    is_anomalous(email_text)
-    if SECURITY_POLICY.get("enable_zero_day", True)
-    else False
-)
+SMS_URGENCY = ["urgent", "verify", "immediately", "suspended", "locked", "click"]
 
-    risk_score = 0
-    reasons = []
 
-    if nlp_result["prediction"] == 1:
-        risk_score += 2
-        reasons.append("Phishing language detected")
+def analyze_sms(text):
+    text = text.lower()
+    return min(sum(1 for w in SMS_URGENCY if w in text), 2)
 
-    if anomaly:
-        risk_score += 1
-        reasons.append("Zero-day anomaly detected")
 
-    action = decide_action(risk_score)
+# ---------------- DECISION ---------------- #
+
+def decide_action(score, channel):
+    t = THRESHOLDS[channel]
+
+    if score >= t["block"]:
+        return "block"
+    if score >= t["warn"]:
+        return "warn"
+    if score >= t["review"]:
+        return "review"
+    return "allow"
+
+
+# ---------------- EMAIL ---------------- #
+
+def analyze_email(text):
+
+    # ---- Feature Extraction ---- #
+
+    sms_risk = analyze_sms(text)
+
+    brand_result = detect_brand_impersonation(text)
+    brand_risk = brand_risk_score(brand_result)
+
+    zero_day_score = 0.0
+    if SECURITY_POLICY.get("enable_zero_day", True):
+        try:
+            zero_day_score = min(get_anomaly_score(text), 1.0)
+        except RuntimeError:
+            pass
+
+    ml_result = run_ml(text)
+    ml_prob = ml_result["probability"] if ml_result else 0.0
+
+    features = {
+        "ml_prob": ml_prob,
+        "zero_day_score": zero_day_score,
+        "sms_risk": sms_risk,
+        "brand_impersonation": round(float(brand_risk), 3),
+        "brand_confidence": brand_result.get("confidence", 0.0),
+        "login_form": 0,
+        "suspicious_url_score": 0,
+        "is_trusted_domain": 0
+    }
+
+    # ---- Meta Model (Final Authority) ---- #
+
+    meta = run_meta_model(features)
+    score = round(meta["probability"], 2) if meta else 0.0
+
+    action = decide_action(score, "email")
     verdict = "phishing" if action == "block" else "safe"
 
-    reasons = humanize_reasons(reasons)
+    features["risk_score"] = score
+
+    log_meta_sample(features, int(verdict == "phishing"), "email")
 
     return {
-        "type": "email",
+        "type": "email_or_sms",
         "verdict": verdict,
         "action": action,
-        "risk_score": risk_score,
-        "reasons": reasons,
-        "explanation": nlp_result
+        "risk_score": score,
+        "confidence": score,  # Step 8: calibrated probability only
+        "reasons": build_attributions(features, score),
+        "features": features
     }
 
 
-# ---------------- WEBSITE ANALYSIS ---------------- #
+# ---------------- WEBSITE ---------------- #
 
 def analyze_website(url):
-    risk_score = 0
-    reasons = []
+
+    extracted = tldextract.extract(url)
+    domain = extracted.registered_domain.lower()
+    is_trusted = domain in TRUSTED_DOMAINS
 
     url_result = analyze_url(url)
     form_result = detect_login_form(url)
     brand_result = detect_brand_impersonation(url)
+    brand_risk = brand_risk_score(brand_result)
 
-    if url_result["verdict"] == "phishing":
-        risk_score += 1
-        reasons.extend(url_result["reasons"])
+    features = {
+        "ml_prob": 0.0,
+        "zero_day_score": 0.0,
+        "sms_risk": 0,
+        "brand_impersonation": round(float(brand_risk), 3),
+        "brand_confidence": brand_result.get("confidence", 0.0),
+        "login_form": int(form_result.get("login_form_detected", False)),
+        "suspicious_url_score": url_result.get("score", 0.0),
+        "is_trusted_domain": int(is_trusted)
+    }
 
-    if form_result.get("login_form_detected"):
-        risk_score += 2
-        reasons.append("Login form detected")
-    
-    if SECURITY_POLICY.get("enable_brand_detection", True):
-        if brand_result["impersonation"]:
-            risk_score += 2
-            reasons.append("Brand impersonation detected")
+    meta = run_meta_model(features)
+    score = round(meta["probability"], 2) if meta else 0.0
 
-    action = decide_action(risk_score)
+    action = decide_action(score, "website")
     verdict = "phishing" if action == "block" else "safe"
 
-    reasons = humanize_reasons(list(set(reasons)))
+    features["risk_score"] = score
+
+    log_meta_sample(features, int(verdict == "phishing"), "website")
 
     return {
         "type": "website",
         "verdict": verdict,
         "action": action,
-        "risk_score": risk_score,
-        "reasons": reasons
+        "risk_score": score,
+        "confidence": score,  # Step 8 complete
+        "reasons": build_attributions(features, score),
+        "features": features
     }
 
 
-# ---------------- UNIFIED ENTRY POINT ---------------- #
+# ---------------- ENTRY ---------------- #
 
 def analyze(input_type, payload):
-    """
-    Unified PhishGuard entry point.
-    input_type: 'email' or 'website'
-    payload: email text or URL
-    """
-    if input_type == "email":
+    input_type = input_type.lower().strip()
+
+    if input_type in ["email", "sms", "email_or_sms"]:
         return analyze_email(payload)
 
-    elif input_type == "website":
+    if input_type == "website":
         return analyze_website(payload)
 
-    else:
-        raise ValueError("Unsupported input type")
-
-
-if __name__ == "__main__":
-    email = "Urgent: verify your account immediately to avoid suspension"
-    url = "http://secure-login-verify-account.tk"
-
-    print(analyze("email", email))
-    print(analyze("website", url))
+    raise ValueError(f"Unsupported input type: {input_type}")

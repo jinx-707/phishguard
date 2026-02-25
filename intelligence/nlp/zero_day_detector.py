@@ -23,17 +23,19 @@ def train_zero_day_detector(data_path="data/raw/emails/phishing_email.csv"):
 
     print("Zero-day anomaly detector trained and saved.")
 
-def is_anomalous(text):
-    if not os.path.exists(MODEL_PATH):
-        train_zero_day_detector()
+def get_anomaly_score(text):
+    if not os.path.exists(MODEL_PATH) or not os.path.exists(VECTORIZER_PATH):
+        raise RuntimeError("Zero-day model not trained. Train it offline first.")
 
     model = joblib.load(MODEL_PATH)
     vectorizer = joblib.load(VECTORIZER_PATH)
 
     X = vectorizer.transform([text])
-    prediction = model.predict(X)
 
-    return prediction[0] == -1
+    # Isolation Forest: lower score = more anomalous
+    raw_score = -model.decision_function(X)[0]
+
+    return max(raw_score, 0.0)
 
 
 if __name__ == "__main__":
