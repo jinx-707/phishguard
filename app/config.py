@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     
     # ✅ ADDED: Full Redis connection URL (fixes ValueError: Extra inputs are not permitted)
     # This also serves as fallback if REDIS_HOST/PORT/DB are not set
-    REDIS_URL: str = os.getenv("REDIS_URL")
+    REDIS_URL: str = os.getenv("REDIS_URL", "")
     
     # ✅ ADDED: Cache TTL (fixes ValueError: Extra inputs are not permitted)
     REDIS_CACHE_TTL: int = int(os.getenv("REDIS_CACHE_TTL", "3600"))

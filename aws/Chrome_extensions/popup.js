@@ -1,4 +1,4 @@
-// PhishGuard Popup - Status Viewer
+// PhishGuard Popup - Status Viewer with Live Scan
 
 document.addEventListener('DOMContentLoaded', async () => {
   const statusDiv = document.getElementById('status');
@@ -12,28 +12,44 @@ document.addEventListener('DOMContentLoaded', async () => {
   const reasonsContainer = document.getElementById('reasons-container');
   const reasonsList = document.getElementById('reasons-list');
 
+  // Show loading state
+  showStatus('Scanning current page...');
+
   try {
-    // Retrieve last scan result from storage
-    const data = await chrome.storage.local.get('lastScan');
+    // Get current active tab
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     
-    if (!data.lastScan) {
-      showStatus('No scan data available');
+    if (!tab || !tab.url) {
+      showStatus('No active page found');
       return;
     }
 
-    const { url, result, timestamp } = data.lastScan;
-
-    if (!result) {
-      showError();
+    // Skip chrome:// and extension:// URLs
+    if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
+      showStatus('Cannot scan browser pages');
       return;
     }
 
-    // Display result
-    showResult(url, result, timestamp);
+    // Trigger fresh scan via background script
+    const scanResult = await triggerScan(tab.id, tab.url);
+    
+    if (scanResult && scanResult.success) {
+      showResult(tab.url, scanResult.data, Date.now());
+    } else if (scanResult && scanResult.error) {
+      // Try to show cached result if available
+      const cached = await chrome.storage.local.get('lastScan');
+      if (cached.lastScan && cached.lastScan.url === tab.url) {
+        showResult(tab.url, cached.lastScan.result, cached.lastScan.timestamp);
+      } else {
+        showError(scanResult.error);
+      }
+    } else {
+      showError('Scan failed');
+    }
 
   } catch (error) {
     console.error('[PhishGuard] Popup error:', error);
-    showError();
+    showError(error.message || 'Connection error');
   }
 
   function showStatus(message) {
@@ -47,10 +63,85 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  function showError() {
+  function showError(message = 'Unable to connect to backend') {
     statusDiv.classList.add('hidden');
     resultDiv.classList.add('hidden');
     errorDiv.classList.remove('hidden');
+    
+    const errorText = errorDiv.querySelector('p');
+    if (errorText) {
+      errorText.textContent = '⚠️ ' + message;
+    }
+  }
+
+  /**
+   * Trigger scan via background script
+   */
+  async function triggerScan(tabId, url) {
+    return new Promise((resolve) => {
+      // First inject content script to extract features
+      chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        func: extractPageFeatures
+      }, (results) => {
+        if (chrome.runtime.lastError) {
+          console.error('[PhishGuard] Script injection failed:', chrome.runtime.lastError);
+          resolve({ success: false, error: 'Cannot access page' });
+          return;
+        }
+
+        const features = results && results[0] && results[0].result;
+        
+        if (!features) {
+          resolve({ success: false, error: 'Failed to extract page data' });
+          return;
+        }
+
+        // Send to background for backend scan
+        chrome.runtime.sendMessage(
+          {
+            type: 'SCAN_PAGE',
+            payload: {
+              url: url,
+              ...features
+            }
+          },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              console.error('[PhishGuard] Scan failed:', chrome.runtime.lastError);
+              resolve({ success: false, error: chrome.runtime.lastError.message });
+              return;
+            }
+
+            if (response && response.risk) {
+              resolve({ success: true, data: response });
+            } else {
+              resolve({ success: false, error: 'Invalid response' });
+            }
+          }
+        );
+      });
+    });
+  }
+
+  /**
+   * Feature extraction function (runs in page context)
+   */
+  function extractPageFeatures() {
+    const body = document.body;
+    const text = body ? (body.innerText || body.textContent || '').slice(0, 2000) : '';
+    
+    return {
+      text_snippet: text,
+      password_fields: document.querySelectorAll('input[type="password"]').length,
+      hidden_inputs: document.querySelectorAll('input[type="hidden"]').length,
+      external_links: document.querySelectorAll('a[href^="http"]').length,
+      iframe_count: document.querySelectorAll('iframe').length,
+      form_count: document.querySelectorAll('form').length,
+      has_login_indicators: document.querySelectorAll('input[type="password"]').length > 0,
+      suspicious_keywords_found: [],
+      timestamp: Date.now()
+    };
   }
 
   function showResult(url, result, timestamp) {

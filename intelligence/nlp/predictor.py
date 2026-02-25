@@ -13,14 +13,27 @@ vectorizer = None
 
 try:
     import joblib
-    MODEL_PATH = os.path.join(os.path.dirname(__file__), "phish_model.joblib")
-    VECTORIZER_PATH = os.path.join(os.path.dirname(__file__), "tfidf_vectorizer.joblib")
+    from pathlib import Path
     
-    if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
+    # Look for models in the project root models/ directory
+    BASE_PATH = Path(__file__).resolve().parents[2]
+    MODEL_PATH = BASE_PATH / "models" / "phish_model.joblib"
+    VECTORIZER_PATH = BASE_PATH / "models" / "tfidf_vectorizer.joblib"
+    
+    if MODEL_PATH.exists() and VECTORIZER_PATH.exists():
         model = joblib.load(MODEL_PATH)
         vectorizer = joblib.load(VECTORIZER_PATH)
         ML_MODEL_AVAILABLE = True
-        print("[PhishGuard] ML model loaded successfully")
+        print(f"[PhishGuard] ML model loaded successfully from {MODEL_PATH}")
+    else:
+        # Fallback to local directory
+        MODEL_PATH = os.path.join(os.path.dirname(__file__), "phish_model.joblib")
+        VECTORIZER_PATH = os.path.join(os.path.dirname(__file__), "tfidf_vectorizer.joblib")
+        if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
+            model = joblib.load(MODEL_PATH)
+            vectorizer = joblib.load(VECTORIZER_PATH)
+            ML_MODEL_AVAILABLE = True
+            print("[PhishGuard] ML model loaded successfully from local directory")
 except Exception as e:
     print(f"[PhishGuard] ML model not available, using rule-based detection: {e}")
 
@@ -79,9 +92,10 @@ class PhishingPredictor:
         # Try ML model first
         if ML_MODEL_AVAILABLE and model and vectorizer and text:
             try:
-                vec = vectorizer.transform([text])
-                prob = model.predict_proba(vec)[0][1]
-                pred = model.predict(vec)[0]
+                # Vectorize the text first, then predict
+                text_vec = vectorizer.transform([text])
+                prob = model.predict_proba(text_vec)[0][1]
+                pred = model.predict(text_vec)[0]
                 
                 return {
                     'score': float(prob),

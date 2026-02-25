@@ -20,63 +20,53 @@ import json
 from typing import Optional
 from pathlib import Path
 
+from app.services.redis import get_raw_redis_client
+
 logger = logging.getLogger(__name__)
 
-EMBEDDING_DIM = 64
-FEATURE_DIM = 16  # raw node feature size
+EMBEDDING_DIM = 32
+FEATURE_DIM = 8  # raw node feature size
 
 
 # ─── Feature Extraction ──────────────────────────────────────────────────────
 
 def extract_node_features(domain: str, node_data: dict) -> torch.Tensor:
     """
-    Converts raw node attributes into a fixed-size feature vector.
-    Works for ANY domain — even ones never seen during training.
-    That's what makes this inductive.
+    Extracts 7 features matching the trained GraphSAGE model.
+    Must match features used in intelligence/gnn/train_gnn.py
     """
-    features = []
-
-    # 1. Domain string features
-    features.append(len(domain))                           # length
-    features.append(domain.count("."))                     # subdomain depth
-    features.append(domain.count("-"))                     # hyphens (phishing signal)
-    features.append(sum(c.isdigit() for c in domain))     # digit count
-
-    # 2. TLD risk signal
-    RISKY_TLDS = {".xyz": 1.0, ".tk": 1.0, ".ml": 1.0, ".ga": 1.0,
-                  ".cf": 1.0, ".gq": 1.0, ".top": 0.8, ".click": 0.8,
-                  ".com": 0.1, ".org": 0.1, ".edu": 0.0}
-    tld_risk = 0.5  # unknown
-    for tld, score in RISKY_TLDS.items():
-        if domain.endswith(tld):
-            tld_risk = score
-            break
-    features.append(tld_risk)
-
-    # 3. Graph-derived features (from node metadata)
-    features.append(1.0 if node_data.get("ip") else 0.0)
-    features.append(1.0 if node_data.get("ssl_fingerprint") else 0.0)
-    features.append(float(node_data.get("gnn_score", 0.0)))
-
-    # 4. Structural features (filled after neighborhood aggregation)
-    features.append(0.0)   # degree placeholder
-    features.append(0.0)   # neighbor malicious ratio placeholder
-    features.append(0.0)   # shared IP flag placeholder
-    features.append(0.0)   # shared cert flag placeholder
-
-    # Padding to FEATURE_DIM
-    while len(features) < FEATURE_DIM:
-        features.append(0.0)
-
-    tensor = torch.tensor(features[:FEATURE_DIM], dtype=torch.float32)
-
-    # Normalize so large values don't dominate
-    tensor[0] = tensor[0] / 100.0   # domain length
-    tensor[1] = tensor[1] / 5.0     # subdomain depth
-    tensor[2] = tensor[2] / 10.0    # hyphens
-    tensor[3] = tensor[3] / 10.0    # digits
-
-    return tensor
+    # 1. Domain length (normalized)
+    domain_length = len(domain) / 100.0
+    
+    # 2. Number of dots (subdomain depth, normalized)
+    dot_count = domain.count(".") / 5.0
+    
+    # 3. Hyphen count (normalized)
+    hyphen_count = domain.count("-") / 10.0
+    
+    # 4. Digit count (normalized)
+    digit_count = sum(c.isdigit() for c in domain) / 20.0
+    
+    # 5. PageRank centrality (from node_data or calculate)
+    pr_score = float(node_data.get("pagerank", 0.0))
+    
+    # 6. Malicious neighbor ratio
+    malicious_neighbors = float(node_data.get("malicious_ratio", 0.0))
+    
+    # 7. SSL presence
+    has_ssl = float(node_data.get("has_ssl", 0))
+    
+    features = [
+        domain_length,
+        dot_count,
+        hyphen_count,
+        digit_count,
+        pr_score,
+        malicious_neighbors,
+        has_ssl
+    ]
+    
+    return torch.tensor(features, dtype=torch.float32)
 
 
 # ─── GraphSAGE Model ─────────────────────────────────────────────────────────
@@ -104,31 +94,38 @@ class GraphSAGELayer(nn.Module):
         return F.relu(self.norm(out))
 
 
-class InductiveGNN(nn.Module):
+class GraphSAGE(nn.Module):
     """
-    2-layer GraphSAGE.
-    Layer 1: raw features → hidden
-    Layer 2: hidden → embedding
-
-    Inductive means: given a new node's features + its neighbors' features,
-    we can generate its embedding without retraining.
+    2-layer GraphSAGE matching the trained model architecture.
     """
-
-    def __init__(self, feature_dim: int = FEATURE_DIM,
-                 hidden_dim: int = 32,
-                 embedding_dim: int = EMBEDDING_DIM):
+    def __init__(self, in_channels: int = 7, hidden_channels: int = 64, out_channels: int = 2):
         super().__init__()
-        self.layer1 = GraphSAGELayer(feature_dim, hidden_dim)
-        self.layer2 = GraphSAGELayer(hidden_dim, embedding_dim)
-        self.dropout = nn.Dropout(0.3)
+        from torch_geometric.nn import SAGEConv
+        
+        self.conv1 = SAGEConv(in_channels, hidden_channels)
+        self.conv2 = SAGEConv(hidden_channels, hidden_channels)
+        self.linear = nn.Linear(hidden_channels, out_channels)
 
-    def forward(self, node_feat: torch.Tensor,
-                neighbor_feats_l1: torch.Tensor,
-                neighbor_feats_l2: torch.Tensor) -> torch.Tensor:
-        h1 = self.layer1(node_feat, neighbor_feats_l1)
-        h1 = self.dropout(h1)
-        h2 = self.layer2(h1, neighbor_feats_l2)
-        return F.normalize(h2, dim=0)  # L2 normalize for cosine similarity
+    def forward(self, x, edge_index):
+        # First layer
+        x = self.conv1(x, edge_index)
+        x = F.relu(x)
+        
+        # Second layer
+        x = self.conv2(x, edge_index)
+        x = F.relu(x)
+        
+        # Classification layer
+        x = self.linear(x)
+        return x
+    
+    def get_embeddings(self, x, edge_index):
+        """Get embeddings from last hidden layer (before classification)."""
+        x = self.conv1(x, edge_index)
+        x = F.relu(x)
+        x = self.conv2(x, edge_index)
+        x = F.relu(x)
+        return x
 
 
 # ─── Embedding Service ───────────────────────────────────────────────────────
@@ -164,15 +161,21 @@ class EmbeddingService:
 
     def _load_or_create_model(self):
         if self.model_path.exists():
-            self.model = InductiveGNN()
-            self.model.load_state_dict(
-                torch.load(self.model_path, map_location=self.device)
-            )
-            logger.info(f"Loaded GNN from {self.model_path}")
+            try:
+                self.model = GraphSAGE(in_channels=7, hidden_channels=64, out_channels=2)
+                checkpoint = torch.load(self.model_path, map_location=self.device)
+                self.model.load_state_dict(checkpoint)
+                    
+                print(f"DEBUG: Loaded trained GNN from {self.model_path}")
+                logger.info(f"Loaded trained GNN from {self.model_path}")
+            except Exception as e:
+                print(f"DEBUG: Failed to load GNN from {self.model_path}: {e}")
+                logger.warning(f"Failed to load GNN from {self.model_path}: {e}")
+                self.model = GraphSAGE(in_channels=7, hidden_channels=64, out_channels=2)
         else:
             logger.warning("No saved model found — using untrained model. "
                            "Run training before production use.")
-            self.model = InductiveGNN()
+            self.model = GraphSAGE(in_channels=7, hidden_channels=64, out_channels=2)
 
         self.model.eval()
 
@@ -182,52 +185,101 @@ class EmbeddingService:
 
     # ── Embedding Generation ──────────────────────────────────────────────────
 
-    async def get_embedding(self, domain: str) -> np.ndarray:
+    async def get_embedding(self, domain: str) -> tuple[np.ndarray, float]:
         """
-        Main entry point. Returns 64-dim numpy array.
-        Checks Redis cache first, generates if miss.
+        Main entry point. Returns (embedding, score) tuple.
+        Checks Redis cache first.
         """
-        # Cache check
-        if self.redis:
-            cached = await self.redis.get(f"embedding:{domain}")
-            if cached:
-                return np.frombuffer(cached, dtype=np.float32)
+        try:
+            raw_redis = await get_raw_redis_client()
+            # Cache check
+            cached = await raw_redis.get(f"embedding:{domain}")
+            cached_score = await raw_redis.get(f"score:{domain}")
+            
+            if cached and cached_score:
+                return (
+                    np.frombuffer(cached, dtype=np.float32),
+                    float(cached_score.decode() if isinstance(cached_score, bytes) else cached_score)
+                )
+        except Exception as e:
+            logger.warning(f"Redis embedding cache failed: {e}")
+            raw_redis = None
 
-        embedding = await asyncio.get_event_loop().run_in_executor(
+        embedding, score = await asyncio.get_event_loop().run_in_executor(
             None, self._generate_embedding, domain
         )
 
         # Cache for 1 hour
-        if self.redis:
-            await self.redis.setex(
-                f"embedding:{domain}", 3600,
-                embedding.astype(np.float32).tobytes()
-            )
+        if raw_redis:
+            try:
+                await raw_redis.setex(
+                    f"embedding:{domain}", 3600,
+                    embedding.astype(np.float32).tobytes()
+                )
+                await raw_redis.setex(
+                    f"score:{domain}", 3600,
+                    str(score).encode()
+                )
+            except Exception:
+                pass
 
-        return embedding
+        return embedding, score
 
-    def _generate_embedding(self, domain: str) -> np.ndarray:
-        """Synchronous embedding generation (runs in executor)."""
+    def _generate_embedding(self, domain: str) -> tuple[np.ndarray, float]:
+        """Synchronous embedding + score generation using trained GNN."""
         if self.model is None:
             raise RuntimeError("Model not initialized. Call initialize() first.")
 
-        if self.graph is None:
-            # No graph yet — use feature-only embedding
-            return self._feature_only_embedding(domain)
-
-        node_data = self.graph.nodes.get(domain, {})
-        node_feat = extract_node_features(domain, node_data)
-
-        # 1-hop neighbors
-        neighbors_1 = self._get_neighbor_features(domain, depth=1)
-
-        # 2-hop neighbors (neighbors of neighbors)
-        neighbors_2 = self._get_neighbor_features(domain, depth=2)
+        # Build subgraph for this domain
+        if self.graph and domain in self.graph:
+            # Get 1-hop and 2-hop neighbors
+            neighbors_1hop = list(self.graph.neighbors(domain))
+            neighbors_2hop = []
+            for n in neighbors_1hop:
+                neighbors_2hop.extend(list(self.graph.neighbors(n)))
+            neighbors_2hop = list(set(neighbors_2hop) - {domain} - set(neighbors_1hop))
+            
+            # Build node list
+            node_list = [domain] + neighbors_1hop[:20] + neighbors_2hop[:10]
+            node_to_idx = {n: i for i, n in enumerate(node_list)}
+            
+            # Build edge index
+            edge_list = []
+            for src in node_list:
+                for dst in self.graph.neighbors(src):
+                    if dst in node_to_idx:
+                        edge_list.append([node_to_idx[src], node_to_idx[dst]])
+            
+            if edge_list:
+                edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
+            else:
+                edge_index = torch.zeros((2, 0), dtype=torch.long)
+            
+            # Build feature matrix
+            features = []
+            for node in node_list:
+                node_data = self.graph.nodes.get(node, {})
+                feat = extract_node_features(node, node_data)
+                features.append(feat)
+            x = torch.stack(features)
+        else:
+            # Single node, no graph context
+            node_data = {}
+            feat = extract_node_features(domain, node_data)
+            x = feat.unsqueeze(0)
+            edge_index = torch.zeros((2, 0), dtype=torch.long)
 
         with torch.no_grad():
-            embedding = self.model(node_feat, neighbors_1, neighbors_2)
+            # Get prediction for the target node (index 0)
+            out = self.model(x, edge_index)
+            probs = F.softmax(out, dim=1)
+            phishing_prob = float(probs[0][1].item())
+            
+            # Get embeddings from last hidden layer
+            embeddings = self.model.get_embeddings(x, edge_index)
+            embedding = embeddings[0].cpu().numpy()
 
-        return embedding.numpy()
+        return embedding, phishing_prob
 
     def _get_neighbor_features(self, domain: str, depth: int) -> torch.Tensor:
         """
@@ -256,13 +308,8 @@ class EmbeddingService:
         return torch.stack(feats)
 
     def _feature_only_embedding(self, domain: str) -> np.ndarray:
-        """Fallback: generate embedding from features alone when no graph."""
-        feat = extract_node_features(domain, {})
-        # Project to embedding dim with a simple linear layer
-        with torch.no_grad():
-            proj = nn.Linear(FEATURE_DIM, EMBEDDING_DIM)
-            result = F.normalize(proj(feat), dim=0)
-        return result.numpy()
+        """DEPRECATED: Now handled by _generate_embedding with empty edge_index."""
+        return self._generate_embedding(domain)
 
     # ── Batch Generation ──────────────────────────────────────────────────────
 

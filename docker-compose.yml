@@ -20,6 +20,9 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      - ./intelligence:/app/intelligence
+      - ./models:/app/models
+      - ./aws/Chrome_extensions/backend/ml:/app/ml
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -72,6 +75,9 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      - ./intelligence:/app/intelligence
+      - ./models:/app/models
+      - ./aws/Chrome_extensions/backend/ml:/app/ml
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping --timeout 5"]
       interval: 30s
@@ -96,6 +102,9 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      - ./intelligence:/app/intelligence
+      - ./models:/app/models
+      - ./aws/Chrome_extensions/backend/ml:/app/ml
 
 volumes:
   postgres_data:

@@ -16,9 +16,11 @@ import structlog
 
 from app.config import settings
 from app.api.routes import router as api_router
+from app.api.forensic_routes import router as forensic_router
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.services.database import init_db, close_db
-from app.services.redis import init_redis, close_redis
+from app.services.redis import init_redis, close_redis, get_redis_client
+from app.services.threat_graph_engine import ThreatGraphEngine, init_threat_engine
 
 # Configure structured logging
 structlog.configure(
@@ -37,6 +39,9 @@ structlog.configure(
 )
 
 logger = structlog.get_logger(__name__)
+
+# Global instances
+threat_engine = None
 
 
 @asynccontextmanager
@@ -78,13 +83,12 @@ async def lifespan(app: FastAPI):
     # Initialize Person 3 ThreatGraphEngine
     try:
         redis_client = await get_redis_client()
-        from app.services.database import engine
-        threat_engine = ThreatGraphEngine(db_pool=engine, redis_client=redis_client)
-        await threat_engine.startup()
+        from app.services import database as db_service
+        # Use helper to initialize global instance
+        await init_threat_engine(db_pool=db_service.db_pool, redis_client=redis_client)
         logger.info("Person 3 ThreatGraphEngine initialized")
     except Exception as e:
-        logger.warning(f"ThreatGraphEngine initialization failed (will use fallback): {e}")
-        threat_engine = None
+        logger.warning(f"ThreatGraphEngine initialization failed: {e}")
     
     yield
     
@@ -151,6 +155,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # Include API routes
 app.include_router(api_router, prefix=settings.API_PREFIX)
+app.include_router(forensic_router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")

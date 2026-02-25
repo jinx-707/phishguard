@@ -16,12 +16,22 @@ class RiskLevel(str, Enum):
     HIGH = "HIGH"
 
 
+class ScanMode(str, Enum):
+    """Scan mode enumeration for dual-mode scanning."""
+    DOMAIN_ONLY = "domain_only"  # Fast pre-navigation scan
+    FULL = "full"                # Complete content + infrastructure scan
+
+
 class ScanRequest(BaseModel):
-    """Request schema for threat scanning."""
+    """Request schema for threat scanning with dual-mode support."""
     text: Optional[str] = Field(None, description="Text content to scan")
     url: Optional[str] = Field(None, description="URL to scan")
     html: Optional[str] = Field(None, description="HTML content to scan")
     meta: Optional[Dict] = Field(default_factory=dict, description="Additional metadata")
+    mode: ScanMode = Field(
+        default=ScanMode.FULL,
+        description="Scan mode: 'domain_only' for fast pre-navigation, 'full' for complete analysis"
+    )
     
     @field_validator('url')
     @classmethod
@@ -58,11 +68,7 @@ class ScanRequest(BaseModel):
 
 
 class ScanResponse(BaseModel):
-    """Response schema for threat scan results."""
-    model_config = ConfigDict(
-        protected_namespaces=()  # Disables warning for model_* fields
-    )
-    
+    """Response schema for threat scan results with blocking support."""
     scan_id: str = Field(..., description="Unique scan identifier")
     risk: RiskLevel = Field(..., description="Risk level assessment")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score")
@@ -71,8 +77,14 @@ class ScanResponse(BaseModel):
     model_score: float = Field(..., ge=0.0, le=1.0, description="ML model score")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="Scan timestamp")
     
-    model_config = {
-        "json_schema_extra": {
+    # Browser blocking fields
+    block: bool = Field(default=False, description="Whether to block navigation (true only if HIGH risk)")
+    domain_risk: float = Field(default=0.0, ge=0.0, le=1.0, description="Infrastructure/domain risk score")
+    content_risk: float = Field(default=0.0, ge=0.0, le=1.0, description="Content/ML risk score")
+    
+    model_config = ConfigDict(
+        protected_namespaces=(),
+        json_schema_extra={
             "example": {
                 "scan_id": "abc123",
                 "risk": "HIGH",
@@ -80,10 +92,13 @@ class ScanResponse(BaseModel):
                 "reasons": ["Known malicious domain", "High centrality score"],
                 "graph_score": 0.8,
                 "model_score": 0.9,
-                "timestamp": "2024-01-15T10:30:00Z"
+                "timestamp": "2024-01-15T10:30:00Z",
+                "block": True,
+                "domain_risk": 0.95,
+                "content_risk": 0.88
             }
         }
-    }
+    )
 
 
 class FeedbackRequest(BaseModel):
@@ -162,6 +177,8 @@ class ThreatIntelResponse(BaseModel):
 
 class ModelHealthResponse(BaseModel):
     """Response schema for model health metrics."""
+    model_config = ConfigDict(protected_namespaces=())
+    
     model_name: str
     uptime: float
     total_predictions: int

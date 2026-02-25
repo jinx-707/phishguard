@@ -13,14 +13,17 @@ from app.models.db import Base
 
 logger = structlog.get_logger(__name__)
 
+import asyncpg
+
 # Global engine and session maker
 engine = None
 async_session_maker = None
+db_pool = None
 
 
 async def init_db():
     """Initialize database connection and create tables."""
-    global engine, async_session_maker
+    global engine, async_session_maker, db_pool
     
     # Create async engine
     if settings.DEBUG:
@@ -47,6 +50,10 @@ async def init_db():
     # Create tables (for development only)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    
+    # Create asyncpg pool for services that need it
+    dsn = settings.DATABASE_URL.replace("+asyncpg", "")
+    db_pool = await asyncpg.create_pool(dsn)
     
     # Apply graph schema (SQL-based tables)
     await apply_graph_schema()
@@ -76,7 +83,7 @@ async def apply_graph_schema():
                 # Execute each statement separately
                 for statement in schema_sql.split(";"):
                     statement = statement.strip()
-                    if statement and not statement.startswith("--"):
+                    if statement:
                         await conn.execute(text(statement))
             
             logger.info("Graph schema applied successfully")
@@ -88,7 +95,10 @@ async def apply_graph_schema():
 
 async def close_db():
     """Close database connection."""
-    global engine
+    global engine, db_pool
+    if db_pool:
+        await db_pool.close()
+        db_pool = None
     if engine:
         await engine.dispose()
         logger.info("Database connection closed")

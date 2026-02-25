@@ -32,10 +32,16 @@ VECTORIZER_PATH = MODEL_DIR / "tfidf_vectorizer.joblib"
 df = pd.read_csv(DATA_PATH)
 
 # Expect columns:
-# - text_combined
+# - subject
+# - body
 # - label (0 = safe, 1 = phishing)
 
-X = df["text_combined"].astype(str)
+# Combine subject and body into text_combined
+# Handle NaN values by filling with empty string
+df["subject"] = df["subject"].fillna("")
+df["body"] = df["body"].fillna("")
+df["text_combined"] = df["subject"].astype(str) + " " + df["body"].astype(str)
+X = df["text_combined"]
 y = df["label"].astype(int)
 
 # ---------------- TRAIN / TEST SPLIT ---------------- #

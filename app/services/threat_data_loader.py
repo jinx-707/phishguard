@@ -145,7 +145,7 @@ class ThreatDataLoader:
         threats = []
         try:
             rows = await self.db.fetch("""
-                SELECT domain, ip, risk_score, threat_type, source, first_seen, tags
+                SELECT domain, ip_address as ip, risk_score, threat_type, source, first_seen, tags
                 FROM threat_indicators
                 WHERE risk_score > 0.5
                 ORDER BY first_seen DESC

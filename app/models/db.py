@@ -1,6 +1,7 @@
 """
 SQLAlchemy database models.
 """
+import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Integer, Float, Boolean, DateTime, Text, 
@@ -17,6 +18,19 @@ class RiskLevelEnum(str, enum.Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+
+
+class OverrideActionEnum(str, enum.Enum):
+    """Override action enumeration."""
+    ALLOW = "ALLOW"
+    BLOCK = "BLOCK"
+
+
+class PolicyModeEnum(str, enum.Enum):
+    """Policy mode enumeration for enforcement."""
+    STRICT = "STRICT"      # Block HIGH and MEDIUM
+    BALANCED = "BALANCED"  # Block HIGH, Warn MEDIUM
+    PERMISSIVE = "PERMISSIVE"  # Block only known_malicious, Warn HIGH, Allow MEDIUM
 
 
 class Scan(Base):
@@ -154,8 +168,50 @@ class ThreatFeed(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class EnterpriseOverride(Base):
+    """
+    Enterprise override table for domain-specific policies.
+    
+    This allows security administrators to explicitly allow or block
+    specific domains, overriding the detection engine's judgment.
+    
+    IMPORTANT: This is separate from detection logic - overrides are
+    applied AFTER detection, not instead of it.
+    """
+    __tablename__ = "enterprise_overrides"
+    
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    domain = Column(String(512), nullable=False, index=True)
+    action = Column(SQLEnum(OverrideActionEnum), nullable=False)
+    reason = Column(Text, nullable=True)
+    created_by = Column(String(128), nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    # Index for efficient lookup of active overrides
+    __table_args__ = (
+        Index('idx_overrides_domain_active', 'domain', postgresql_where=(expires_at > datetime.utcnow())),
+    )
+
+
+class PolicySettings(Base):
+    """
+    System-wide policy settings for enforcement.
+    
+    Stores the current policy mode that determines how detection
+    results are translated into blocking decisions.
+    """
+    __tablename__ = "policy_settings"
+    
+    id = Column(Integer, primary_key=True)
+    policy_mode = Column(SQLEnum(PolicyModeEnum), default=PolicyModeEnum.BALANCED, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_by = Column(String(128), nullable=True)
+
+
 # Define indexes for performance
 Index('idx_scans_created_at', Scan.created_at.desc())
 Index('idx_scans_risk', Scan.risk)
 Index('idx_domains_risk_score', Domain.risk_score.desc())
 Index('idx_relations_type', Relation.relation_type)
+Index('idx_overrides_domain', EnterpriseOverride.domain)

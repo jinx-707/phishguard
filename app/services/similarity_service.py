@@ -11,16 +11,15 @@ Why FAISS over brute-force cosine:
 
 import asyncio
 import numpy as np
-import logging
 import json
-import pickle
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
-EMBEDDING_DIM = 64
+EMBEDDING_DIM = 32
 
 
 # ─── Data Structures ─────────────────────────────────────────────────────────
@@ -92,17 +91,32 @@ class SimilarityService:
         import faiss
 
         if self.index_path.exists() and self.meta_path.exists():
-            self._index = faiss.read_index(str(self.index_path))
-            with open(self.meta_path) as f:
-                raw = json.load(f)
-                self._meta = {int(k): v for k, v in raw.items()}
-            logger.info(f"FAISS index loaded: {self._index.ntotal} vectors")
+            try:
+                self._index = faiss.read_index(str(self.index_path))
+                # Check for dimension mismatch
+                if self._index.d != EMBEDDING_DIM:
+                    logger.warning("FAISS dimension mismatch, rebuilding...", 
+                                   expected=EMBEDDING_DIM, actual=self._index.d)
+                    self._build_fresh_index()
+                else:
+                    with open(self.meta_path) as f:
+                        raw = json.load(f)
+                        self._meta = {int(k): v for k, v in raw.items()}
+                    logger.info("FAISS index loaded", ntotal=self._index.ntotal)
+            except Exception as e:
+                logger.warning(f"Failed to load FAISS index: {e}, rebuilding...")
+                self._build_fresh_index()
         else:
-            # IVF index: good balance of speed vs accuracy
-            # For < 1000 vectors, flat index is fine and more accurate
-            quantizer = faiss.IndexFlatIP(EMBEDDING_DIM)  # Inner product = cosine on normalized vecs
-            self._index = faiss.IndexIDMap(quantizer)
-            logger.info("FAISS: built fresh flat index")
+            self._build_fresh_index()
+
+    def _build_fresh_index(self):
+        import faiss
+        # IVF index: good balance of speed vs accuracy
+        # For < 1000 vectors, flat index is fine and more accurate
+        quantizer = faiss.IndexFlatIP(EMBEDDING_DIM)  # Inner product = cosine on normalized vecs
+        self._index = faiss.IndexIDMap(quantizer)
+        self._meta = {}
+        logger.info("FAISS: built fresh flat index", dim=EMBEDDING_DIM)
 
     async def _load_numpy_embeddings(self):
         """Fallback: load embeddings stored as JSON in DB."""
@@ -157,25 +171,30 @@ class SimilarityService:
     def _faiss_add(self, domain: str, embedding: np.ndarray,
                    gnn_score: float, risk_label: str):
         """Synchronous FAISS add (called in executor)."""
-        # Use hash as stable integer ID
-        domain_id = abs(hash(domain)) % (2**31)
+        import hashlib
+        # Use stable hash as integer ID (hash() is salted in Python 3.3+)
+        domain_id = int(hashlib.md5(domain.encode()).hexdigest(), 16) % (2**31)
 
-        # Remove old entry if exists
-        if domain_id in self._meta:
-            self._index.remove_ids(np.array([domain_id], dtype=np.int64))
+        try:
+            # Remove old entry if exists (prevents duplicates)
+            if domain_id in self._meta:
+                self._index.remove_ids(np.array([domain_id], dtype=np.int64))
 
-        vec = embedding.reshape(1, EMBEDDING_DIM)
-        self._index.add_with_ids(vec, np.array([domain_id], dtype=np.int64))
+            vec = embedding.reshape(1, EMBEDDING_DIM)
+            self._index.add_with_ids(vec, np.array([domain_id], dtype=np.int64))
 
-        self._meta[domain_id] = {
-            "domain": domain,
-            "gnn_score": gnn_score,
-            "risk_label": risk_label
-        }
+            self._meta[domain_id] = {
+                "domain": domain,
+                "gnn_score": gnn_score,
+                "risk_label": risk_label
+            }
 
-        # Persist index every 50 additions
-        if len(self._meta) % 50 == 0:
-            self._save_faiss_index()
+            # Persist index every 50 additions
+            if len(self._meta) % 50 == 0:
+                self._save_faiss_index()
+        except Exception as e:
+            logger.error(f"FAISS add failed for {domain}: {e}", exc_info=True)
+            raise e
 
     def _save_faiss_index(self):
         import faiss

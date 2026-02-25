@@ -68,7 +68,7 @@ class GraphUpdateService:
 
             # Load domain nodes
             rows = await self.db.fetch(
-                "SELECT domain, ip, ssl_fingerprint, registrar, asn, gnn_score, risk_label "
+                "SELECT domain, node_type, ip, ssl_fingerprint, registrar, asn, gnn_score, risk_label "
                 "FROM graph_nodes"
             )
             for row in rows:
@@ -78,6 +78,13 @@ class GraphUpdateService:
             ip_rows = await self.db.fetch("SELECT DISTINCT ip FROM graph_nodes WHERE ip IS NOT NULL")
             for row in ip_rows:
                 self.graph.add_node(f"ip:{row['ip']}", node_type="ip")
+
+            # Load certificate nodes
+            cert_rows = await self.db.fetch("SELECT DISTINCT ssl_fingerprint FROM graph_nodes WHERE ssl_fingerprint IS NOT NULL")
+            for row in cert_rows:
+                fp = row["ssl_fingerprint"]
+                if fp:
+                    self.graph.add_node(f"cert:{fp[:16]}", node_type="certificate")
 
             # Load edges
             edge_rows = await self.db.fetch(

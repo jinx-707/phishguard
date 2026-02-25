@@ -25,6 +25,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app/ ./app/
+COPY intelligence/ ./intelligence/
+COPY models/ ./models/
+# Copy the ML models from the extension backend to the expected location
+COPY aws/Chrome_extensions/backend/ml/ ./ml/
 COPY pyproject.toml .
 
 # Expose port

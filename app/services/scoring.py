@@ -1,7 +1,9 @@
 """
 Scoring and fusion engine for combining model and graph scores.
+Recalibrated v2.0 - Enhanced risk scoring with infrastructure boosts and escalation rules.
+v3.0 - Clean tiered reasons system for enterprise-grade readability.
 """
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 import structlog
 
 from app.config import settings
@@ -10,65 +12,423 @@ from app.models.schemas import RiskLevel
 logger = structlog.get_logger(__name__)
 
 
+# ============================================================
+# REASON TIER SYSTEM v3.0
+# ============================================================
+# Enterprise-grade readable reasons organized by severity:
+#
+# 🔴 CRITICAL (Tier 1) - Immediate action required
+# 🟠 WARNING (Tier 2) - Review recommended  
+# 🟢 INFO (Tier 3) - Informational only
+
+REASON_TIERS = {
+    # Critical reasons - HIGH risk
+    "KNOWN_MALICIOUS": {
+        "tier": "🔴",
+        "level": "CRITICAL",
+        "message": "Known malicious domain"
+    },
+    "INFRASTRUCTURE_MATCHES_PHISHING_CLUSTER": {
+        "tier": "🔴", 
+        "level": "CRITICAL",
+        "message": "Infrastructure matches phishing cluster"
+    },
+    "CAMPAIGN_PARTICIPATION": {
+        "tier": "🔴",
+        "level": "CRITICAL", 
+        "message": "Part of active phishing campaign"
+    },
+    
+    # Warning reasons - MEDIUM risk indicators
+    "SUSPICIOUS_TLD": {
+        "tier": "🟠",
+        "level": "WARNING",
+        "message": "Suspicious top-level domain"
+    },
+    "NEW_DOMAIN": {
+        "tier": "🟠",
+        "level": "WARNING",
+        "message": "Recently registered domain"
+    },
+    "NO_SSL": {
+        "tier": "🟠",
+        "level": "WARNING", 
+        "message": "Invalid or missing SSL certificate"
+    },
+    "FAST_FLUX_DNS": {
+        "tier": "🟠",
+        "level": "WARNING",
+        "message": "Fast-flux DNS detected"
+    },
+    "HIGH_ML_CONFIDENCE": {
+        "tier": "🟠",
+        "level": "WARNING",
+        "message": "High phishing text confidence"
+    },
+    "MODERATE_ML_CONFIDENCE": {
+        "tier": "🟠",
+        "level": "WARNING",
+        "message": "Moderate phishing indicators detected"
+    },
+    "STRONG_INFRA_INDICATORS": {
+        "tier": "🟠",
+        "level": "WARNING",
+        "message": "Strong infrastructure threat indicators"
+    },
+    "SOME_INFRA_INDICATORS": {
+        "tier": "🟠",
+        "level": "WARNING",
+        "message": "Some infrastructure threat indicators"
+    },
+    
+    # Info reasons - LOW risk / benign
+    "LOW_ML_CONFIDENCE": {
+        "tier": "🟢",
+        "level": "INFO",
+        "message": "Content appears benign"
+    },
+    "NO_INFRA_INDICATORS": {
+        "tier": "🟢",
+        "level": "INFO",
+        "message": "No significant infrastructure threats"
+    },
+    "DOMAIN_AGE_UNKNOWN": {
+        "tier": "🟢",
+        "level": "INFO",
+        "message": "Domain age could not be determined"
+    },
+}
+
+
+def _convert_reason_to_tiered(reason: str) -> str:
+    """
+    Convert legacy reason strings to tiered format.
+    Maps old verbose reasons to new enterprise-grade format.
+    """
+    reason_lower = reason.lower()
+    
+    # Critical mappings
+    if "known malicious" in reason_lower:
+        return "🔴 Known malicious domain"
+    if "campaign" in reason_lower:
+        return "🔴 Infrastructure matches phishing cluster"
+    if "cluster" in reason_lower and "similar" in reason_lower:
+        return "🔴 Infrastructure matches phishing cluster"
+    if "infrastructure nearly identical" in reason_lower:
+        return "🔴 Infrastructure matches phishing cluster"
+    if "gnn infrastructure similarity" in reason_lower:
+        return "🔴 Infrastructure matches phishing cluster"
+        
+    # Warning mappings
+    if "suspicious tld" in reason_lower:
+        return "🟠 Suspicious top-level domain"
+    if "new domain" in reason_lower or "very new domain" in reason_lower:
+        return "🟠 Recently registered domain"
+    if "domain age could not be determined" in reason_lower:
+        return "🟠 Domain age could not be determined"
+    if "no valid ssl" in reason_lower or "ssl" in reason_lower:
+        return "🟠 Invalid or missing SSL certificate"
+    if "fast-flux" in reason_lower or "ttl=" in reason_lower:
+        return "🟠 Fast-flux DNS detected"
+    if "very high ml" in reason_lower:
+        return "🟠 High phishing text confidence"
+    if "high ml" in reason_lower:
+        return "🟠 High phishing text confidence"
+    if "moderate ml" in reason_lower:
+        return "🟠 Moderate phishing indicators detected"
+    if "strong infrastructure" in reason_lower:
+        return "🟠 Strong infrastructure threat indicators"
+    if "some infrastructure" in reason_lower:
+        return "🟠 Some infrastructure threat indicators"
+    if "composite escalation" in reason_lower:
+        return "🟠 Multiple suspicious indicators detected"
+    if "fast-flux dns auto-escalated" in reason_lower:
+        return "🟠 Fast-flux DNS auto-escalated risk"
+        
+    # Info mappings
+    if "low ml" in reason_lower and "benign" in reason_lower:
+        return "🟢 Content appears benign"
+    if "no significant infrastructure" in reason_lower:
+        return "🟢 No significant infrastructure threats"
+    if "appears safe" in reason_lower or "domain appears safe" in reason_lower:
+        return "🟢 Domain appears safe"
+        
+    # Risk level summaries - simplify these
+    if "high risk level" in reason_lower:
+        return "🔴 HIGH risk: immediate attention required"
+    if "medium risk level" in reason_lower:
+        return "🟠 MEDIUM risk: review recommended"
+    if "low risk level" in reason_lower:
+        return "🟢 LOW risk: appears safe"
+        
+    # Return original if no mapping found
+    return reason
+
+
+def _tier_reasons(reasons: List[str]) -> List[str]:
+    """
+    Convert a list of reasons to tiered format and sort by tier.
+    Critical (🔴) first, then Warning (🟠), then Info (🟢).
+    """
+    tiered_reasons = [_convert_reason_to_tiered(r) for r in reasons if r]
+    
+    # Sort by tier: 🔴 > 🟠 > 🟢
+    tier_order = {"🔴": 0, "🟠": 1, "🟢": 2}
+    
+    def get_tier_sort(r: str) -> int:
+        for tier, order in tier_order.items():
+            if r.startswith(tier):
+                return order
+        return 3  # Unknown tier goes last
+    
+    tiered_reasons.sort(key=get_tier_sort)
+    
+    # Deduplicate while preserving order
+    unique_reasons = []
+    seen = set()
+    for r in tiered_reasons:
+        if r and r not in seen:
+            unique_reasons.append(r)
+            seen.add(r)
+    
+    return unique_reasons
+
+
 def compute_final_score(
     model_score: float,
     graph_score: float,
+    reputation_risk_score: float = 0.0,
+    infrastructure_risk_score: float = 0.0,
+    dns_ttl: Optional[int] = None,
+    ssl_valid: bool = True,
+    domain_age_days: Optional[int] = None,
+    known_malicious: bool = False,
+    suspicious_tld: bool = False,
+    campaign_participation: bool = False,
 ) -> Tuple[RiskLevel, float, List[str]]:
     """
-    Compute final risk score by fusing model and graph scores.
+    Compute final risk score with separated content and infrastructure layers.
+    
+    Architecture:
+    - content_risk: Directly from ML model (phishing content detection)
+    - infrastructure_risk: Weighted combination of graph, reputation, DNS, SSL, age
     
     Args:
-        model_score: ML model score (0-1)
-        graph_score: Graph-based score (0-1)
+        model_score: ML model score (0-1) - content-level phishing detection
+        graph_score: GNN + similarity score (0-1)
+        reputation_risk_score: WHOIS/ASN/SSL reputation (0-1)
+        infrastructure_risk_score: Base infrastructure risk from graph + campaign
+        dns_ttl: DNS TTL in seconds (fast-flux indicator if <= 60)
+        ssl_valid: SSL certificate validity
+        domain_age_days: Domain age in days (suspicious if < 7)
+        known_malicious: Flag if domain is in known malicious list
+        suspicious_tld: Flag if TLD is suspicious (.tk, .ml, .xyz, etc.)
+        campaign_participation: Flag if domain part of known campaign
     
     Returns:
         Tuple of (risk_level, confidence, reasons)
     """
-    # Normalize scores to [0, 1]
-    model_score = max(0.0, min(1.0, model_score))
-    graph_score = max(0.0, min(1.0, graph_score))
+    # Normalize all scores to [0, 1] with None handling
+    model_score = _normalize_score(model_score)
+    graph_score = _normalize_score(graph_score)
+    reputation_risk_score = _normalize_score(reputation_risk_score)
+    infrastructure_risk_score = _normalize_score(infrastructure_risk_score)
     
-    # Weighted fusion
-    final_score = (
-        settings.MODEL_WEIGHT * model_score +
-        settings.GRAPH_WEIGHT * graph_score
+    # ==========================================
+    # 1️⃣ SEPARATE INTERNAL RISK LAYERS
+    # ==========================================
+    
+    # Content risk: Direct ML model output (phishing content detection)
+    content_risk = model_score
+    
+    # Infrastructure risk: Weighted combination of multiple signals
+    # Base: graph_score (40%) + reputation (30%) + existing infra score (30%)
+    infrastructure_risk = (
+        graph_score * 0.40 +
+        reputation_risk_score * 0.30 +
+        infrastructure_risk_score * 0.30
     )
     
-    # Determine risk level based on thresholds
-    if final_score >= 0.7:
+    # ==========================================
+    # 2️⃣ INFRASTRUCTURE BOOST RULES
+    # ==========================================
+    
+    reasons = []  # Track which boosts are applied
+    
+    # Known malicious: Force minimum 0.9 infrastructure risk
+    if known_malicious:
+        infrastructure_risk = max(infrastructure_risk, 0.9)
+        reasons.append("⚠️ KNOWN MALICIOUS - Found in threat database!")
+    
+    # Fast-flux DNS detection (TTL <= 60 seconds)
+    if dns_ttl is not None and dns_ttl <= 60:
+        infrastructure_risk = min(infrastructure_risk + 0.25, 1.0)
+        reasons.append(f"Fast-flux DNS detected (TTL={dns_ttl}s)")
+    
+    # Invalid SSL certificate
+    if not ssl_valid:
+        infrastructure_risk = min(infrastructure_risk + 0.15, 1.0)
+        reasons.append("No valid SSL certificate — unencrypted or certificate error")
+    
+    # New domain (less than 7 days old) or unknown age
+    if domain_age_days is None or domain_age_days < 7:
+        infrastructure_risk = min(infrastructure_risk + 0.15, 1.0)
+        if domain_age_days is not None:
+            reasons.append(f"Very new domain (age: {domain_age_days} days)")
+        else:
+            reasons.append("Domain age could not be determined")
+    
+    # Campaign participation boost
+    if campaign_participation:
+        infrastructure_risk = min(infrastructure_risk + 0.20, 1.0)
+        reasons.append("Domain linked to active phishing campaign")
+    
+    # Cap infrastructure risk at 1.0
+    infrastructure_risk = min(infrastructure_risk, 1.0)
+    
+    # ==========================================
+    # FINAL SCORE COMPUTATION (50/50 split)
+    # ==========================================
+    
+    final_score = (content_risk * 0.5) + (infrastructure_risk * 0.5)
+    
+    # ==========================================
+    # 3️⃣ HIGH CONFIDENCE ESCALATION RULE
+    # ==========================================
+    
+    if model_score >= 0.9 and suspicious_tld:
+        final_score = max(final_score, 0.8)
+        reasons.append("High ML confidence + suspicious TLD escalation")
+    
+    # ==========================================
+    # 4️⃣ COMPOSITE ESCALATION RULE
+    # ==========================================
+    
+    composite_flags = [
+        suspicious_tld,
+        not ssl_valid,
+        (domain_age_days is None or domain_age_days < 7),
+        (dns_ttl is not None and dns_ttl <= 60)
+    ]
+    composite_count = sum(1 for flag in composite_flags if flag)
+    
+    if composite_count >= 3:
+        final_score = max(final_score, 0.85)
+        reasons.append(f"Multiple suspicious indicators ({composite_count}/4) — composite escalation")
+    
+    # ==========================================
+    # 5️⃣ RISK CLASSIFICATION THRESHOLDS
+    # ==========================================
+    
+    if final_score >= 0.75:
         risk_level = RiskLevel.HIGH
-    elif final_score >= 0.4:
+    elif final_score >= 0.45:
         risk_level = RiskLevel.MEDIUM
     else:
         risk_level = RiskLevel.LOW
     
-    # Calculate confidence based on score distribution
-    score_diff = abs(model_score - graph_score)
-    confidence = 1.0 - (score_diff / 2.0)  # Higher confidence when scores agree
+    # ==========================================
+    # 6️⃣ REASON CONSISTENCY CHECKS
+    # ==========================================
     
-    # Generate explanation reasons
-    reasons = _generate_reasons(model_score, graph_score, risk_level)
+    # Rule: If known_malicious, risk MUST be HIGH
+    if known_malicious and risk_level != RiskLevel.HIGH:
+        risk_level = RiskLevel.HIGH
+        final_score = max(final_score, 0.9)
+        logger.warning("Risk escalation: known_malicious forced to HIGH", final_score=final_score)
+    
+    # Rule: If DNS fast-flux and risk is LOW, escalate to MEDIUM minimum
+    if (dns_ttl is not None and dns_ttl <= 60) and risk_level == RiskLevel.LOW:
+        risk_level = RiskLevel.MEDIUM
+        final_score = max(final_score, 0.45)
+        reasons.append("Fast-flux DNS auto-escalated risk to MEDIUM")
+        logger.warning("Risk escalation: fast-flux DNS forced to MEDIUM", final_score=final_score)
+    
+    # ==========================================
+    # CONFIDENCE CALCULATION
+    # ==========================================
+    
+    # Higher confidence when content and infrastructure risks agree
+    score_diff = abs(content_risk - infrastructure_risk)
+    confidence = 1.0 - (score_diff / 2.0)
+    
+    # Boost confidence if known_malicious (high certainty)
+    if known_malicious:
+        confidence = max(confidence, 0.95)
+    
+    # ==========================================
+    # GENERATE COMPLETE REASONS LIST
+    # ==========================================
+    
+    # Add content-level reasons
+    if model_score >= 0.9:
+        reasons.append("Very high ML model confidence for malicious content")
+    elif model_score >= 0.7:
+        reasons.append("High ML model confidence for malicious content")
+    elif model_score >= 0.4:
+        reasons.append("Moderate ML model confidence")
+    else:
+        reasons.append("Low ML model confidence — content appears benign")
+    
+    # Add infrastructure-level reasons
+    if infrastructure_risk >= 0.7:
+        reasons.append("Strong infrastructure threat indicators")
+    elif infrastructure_risk >= 0.4:
+        reasons.append("Some infrastructure threat indicators")
+    else:
+        reasons.append("No significant infrastructure threat indicators")
+    
+    # Add risk level summary
+    if risk_level == RiskLevel.HIGH:
+        reasons.append("HIGH risk level: immediate attention recommended")
+    elif risk_level == RiskLevel.MEDIUM:
+        reasons.append("MEDIUM risk level: review recommended")
+    else:
+        reasons.append("LOW risk level: appears safe")
+    
+    # Convert to tiered reasons for enterprise-grade readability
+    unique_reasons = _tier_reasons(reasons)
     
     logger.info(
-        "Score computed",
-        model_score=model_score,
-        graph_score=graph_score,
-        final_score=final_score,
+        "Score computed v2.0",
+        content_risk=round(content_risk, 3),
+        infrastructure_risk=round(infrastructure_risk, 3),
+        final_score=round(final_score, 3),
         risk_level=risk_level.value,
+        composite_flags=composite_count,
+        known_malicious=known_malicious,
     )
     
-    return risk_level, round(confidence, 2), reasons
+    return risk_level, round(confidence, 2), unique_reasons
 
 
-def _generate_reasons(
+def _normalize_score(score: Optional[float], default: float = 0.0) -> float:
+    """
+    Safely normalize a score to [0, 1] range.
+    Handles None, NaN, and out-of-range values.
+    """
+    if score is None:
+        return default
+    try:
+        score = float(score)
+        if score != score:  # NaN check
+            return default
+        return max(0.0, min(1.0, score))
+    except (TypeError, ValueError):
+        return default
+
+
+def _generate_legacy_reasons(
     model_score: float,
     graph_score: float,
     risk_level: RiskLevel,
 ) -> List[str]:
-    """Generate explanation reasons based on scores."""
+    """
+    Legacy reason generator for backward compatibility.
+    Deprecated: Use compute_final_score with full parameters instead.
+    """
     reasons = []
     
-    # Model-based reasons
     if model_score >= 0.7:
         reasons.append("High ML model confidence for malicious content")
     elif model_score >= 0.4:
@@ -76,7 +436,6 @@ def _generate_reasons(
     else:
         reasons.append("Low ML model confidence")
     
-    # Graph-based reasons
     if graph_score >= 0.7:
         reasons.append("Strong graph-based threat indicators")
     elif graph_score >= 0.4:
@@ -84,7 +443,6 @@ def _generate_reasons(
     else:
         reasons.append("No significant graph threat indicators")
     
-    # Risk level specific
     if risk_level == RiskLevel.HIGH:
         reasons.append("HIGH risk level: immediate attention recommended")
     elif risk_level == RiskLevel.MEDIUM:
@@ -131,3 +489,158 @@ def calculate_entropy(scores: List[float]) -> float:
             entropy -= p * math.log2(p)
     
     return entropy
+
+
+def compute_domain_only_score(
+    graph_score: float,
+    reputation_risk_score: float = 0.0,
+    infrastructure_risk_score: float = 0.0,
+    dns_ttl: Optional[int] = None,
+    ssl_valid: bool = True,
+    domain_age_days: Optional[int] = None,
+    known_malicious: bool = False,
+    suspicious_tld: bool = False,
+    campaign_participation: bool = False,
+) -> Tuple[RiskLevel, float, List[str], float]:
+    """
+    Fast domain-only scoring for pre-navigation browser blocking.
+    
+    Optimized for <300ms response time by skipping:
+    - HTML fetching
+    - ML text classification
+    - Content analysis
+    
+    Architecture:
+    - content_risk = 0 (no content analysis)
+    - infrastructure_risk = weighted combination of all domain signals
+    - final_score = infrastructure_risk (100% weight on infrastructure)
+    
+    Args:
+        graph_score: GNN + similarity score (0-1)
+        reputation_risk_score: WHOIS/ASN/SSL reputation (0-1)
+        infrastructure_risk_score: Base infrastructure risk from graph + campaign
+        dns_ttl: DNS TTL in seconds (fast-flux indicator if <= 60)
+        ssl_valid: SSL certificate validity
+        domain_age_days: Domain age in days (suspicious if < 7)
+        known_malicious: Flag if domain is in known malicious list
+        suspicious_tld: Flag if TLD is suspicious (.tk, .ml, .xyz, etc.)
+        campaign_participation: Flag if domain part of known campaign
+    
+    Returns:
+        Tuple of (risk_level, confidence, reasons, final_score)
+    """
+    # Normalize all scores to [0, 1] with None handling
+    graph_score = _normalize_score(graph_score)
+    reputation_risk_score = _normalize_score(reputation_risk_score)
+    infrastructure_risk_score = _normalize_score(infrastructure_risk_score)
+    
+    # ==========================================
+    # INFRASTRUCTURE RISK COMPUTATION
+    # ==========================================
+    
+    # Base: weighted combination of signals
+    infrastructure_risk = (
+        graph_score * 0.40 +
+        reputation_risk_score * 0.30 +
+        infrastructure_risk_score * 0.30
+    )
+    
+    reasons = []
+    
+    # Known malicious: Force minimum 0.9 infrastructure risk
+    if known_malicious:
+        infrastructure_risk = max(infrastructure_risk, 0.9)
+        reasons.append("⚠️ KNOWN MALICIOUS - Found in threat database!")
+    
+    # Fast-flux DNS detection (TTL <= 60 seconds)
+    if dns_ttl is not None and dns_ttl <= 60:
+        infrastructure_risk = min(infrastructure_risk + 0.25, 1.0)
+        reasons.append(f"Fast-flux DNS detected (TTL={dns_ttl}s)")
+    
+    # Invalid SSL certificate
+    if not ssl_valid:
+        infrastructure_risk = min(infrastructure_risk + 0.15, 1.0)
+        reasons.append("No valid SSL certificate — unencrypted or certificate error")
+    
+    # New domain (less than 7 days old) or unknown age
+    if domain_age_days is None or domain_age_days < 7:
+        infrastructure_risk = min(infrastructure_risk + 0.15, 1.0)
+        if domain_age_days is not None:
+            reasons.append(f"Very new domain (age: {domain_age_days} days)")
+        else:
+            reasons.append("Domain age could not be determined")
+    
+    # Campaign participation boost
+    if campaign_participation:
+        infrastructure_risk = min(infrastructure_risk + 0.20, 1.0)
+        reasons.append("Domain linked to active phishing campaign")
+    
+    # Cap infrastructure risk at 1.0
+    infrastructure_risk = min(infrastructure_risk, 1.0)
+    
+    # ==========================================
+    # FINAL SCORE (Domain-only: 100% infrastructure)
+    # ==========================================
+    
+    final_score = infrastructure_risk  # No content risk in domain-only mode
+    
+    # ==========================================
+    # RISK CLASSIFICATION (Domain-only thresholds)
+    # ==========================================
+    
+    if final_score >= 0.75:
+        risk_level = RiskLevel.HIGH
+    elif final_score >= 0.45:
+        risk_level = RiskLevel.MEDIUM
+    else:
+        risk_level = RiskLevel.LOW
+    
+    # ==========================================
+    # HARD BLOCKING RULE
+    # ==========================================
+    
+    # If known_malicious, always HIGH (override any other logic)
+    if known_malicious and risk_level != RiskLevel.HIGH:
+        risk_level = RiskLevel.HIGH
+        final_score = max(final_score, 0.9)
+        reasons.append("Known malicious domain — forced HIGH risk")
+    
+    # ==========================================
+    # CONFIDENCE CALCULATION
+    # ==========================================
+    
+    # High confidence for known malicious
+    confidence = 0.95 if known_malicious else 0.75
+    
+    # ==========================================
+    # GENERATE REASONS
+    # ==========================================
+    
+    # Add infrastructure-level reasons
+    if infrastructure_risk >= 0.7:
+        reasons.append("Strong infrastructure threat indicators")
+    elif infrastructure_risk >= 0.4:
+        reasons.append("Some infrastructure threat indicators")
+    else:
+        reasons.append("No significant infrastructure threat indicators")
+    
+    # Add risk level summary
+    if risk_level == RiskLevel.HIGH:
+        reasons.append("HIGH risk level: immediate attention recommended")
+    elif risk_level == RiskLevel.MEDIUM:
+        reasons.append("MEDIUM risk level: review recommended")
+    else:
+        reasons.append("LOW risk level: domain appears safe")
+    
+    # Convert to tiered reasons for enterprise-grade readability
+    unique_reasons = _tier_reasons(reasons)
+    
+    logger.info(
+        "Domain-only score computed",
+        infrastructure_risk=round(infrastructure_risk, 3),
+        final_score=round(final_score, 3),
+        risk_level=risk_level.value,
+        known_malicious=known_malicious,
+    )
+    
+    return risk_level, round(confidence, 2), unique_reasons, final_score

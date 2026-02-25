@@ -19,6 +19,11 @@ Architecture:
 
 import asyncio
 import structlog
+import networkx as nx
+import logging
+import json
+import sys
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -76,6 +81,12 @@ class ThreatGraphResult:
     reasons: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        # Deduplicate reasons while preserving order
+        unique_reasons = []
+        for r in self.reasons:
+            if r and r not in unique_reasons:
+                unique_reasons.append(r)
+
         return {
             "domain": self.domain,
             "gnn_score": round(self.gnn_score, 3),
@@ -98,8 +109,26 @@ class ThreatGraphResult:
                 {"domain": s.domain, "similarity": round(s.similarity, 3)}
                 for s in self.similar_domains[:3]
             ],
-            "reasons": self.reasons,
+            "reasons": unique_reasons
         }
+
+
+# Global engine instance
+_engine: Optional['ThreatGraphEngine'] = None
+
+async def init_threat_engine(db_pool, redis_client) -> 'ThreatGraphEngine':
+    """Initialize the global ThreatGraphEngine."""
+    global _engine
+    if _engine is None:
+        _engine = ThreatGraphEngine(db_pool, redis_client)
+        await _engine.startup()
+    return _engine
+
+async def get_threat_engine() -> 'ThreatGraphEngine':
+    """Get the global ThreatGraphEngine instance."""
+    if _engine is None:
+        raise RuntimeError("ThreatGraphEngine not initialized. Call init_threat_engine first.")
+    return _engine
 
 
 # ─── Threat Graph Engine ──────────────────────────────────────────────────────
@@ -148,6 +177,7 @@ class ThreatGraphEngine:
         logger.info("ThreatGraphEngine: starting up with REAL-TIME intelligence...")
 
         # 0. Load real-time threat data
+        threats = []
         try:
             threats = await self.threat_loader.load_initial_threat_data()
             logger.info(f"Loaded {len(threats)} real threat indicators")
@@ -156,6 +186,22 @@ class ThreatGraphEngine:
 
         # 1. Rebuild graph from DB
         await self.graph_updater.load_graph_from_db()
+
+        # 1.5 Seed graph with new threats (if not already in DB)
+        for t in threats:
+            if t.domain not in self.graph_updater.graph:
+                # Add basic node info so visualization and GNN can use it
+                self.graph_updater.graph.add_node(
+                    t.domain,
+                    node_type="domain",
+                    risk_label="MALICIOUS",
+                    gnn_score=t.risk_score,
+                    source=t.source
+                )
+                if t.ip:
+                    ip_node = f"ip:{t.ip}"
+                    self.graph_updater.graph.add_node(ip_node, node_type="ip")
+                    self.graph_updater.graph.add_edge(t.domain, ip_node, relation="resolves_to")
 
         # 2. Load GNN model
         await self.embedding_svc.initialize()
@@ -181,16 +227,27 @@ class ThreatGraphEngine:
 
     # ── Main Analysis ─────────────────────────────────────────────────────────
 
-    async def analyze(self, domain: str,
-                      risk_label: str = "UNKNOWN") -> ThreatGraphResult:
-        """
-        Full Person 3 analysis for a single domain.
+    async def analyze(self, domain_or_url: str, text: Optional[str] = None, 
+                      html: Optional[str] = None, risk_label: str = "UNKNOWN") -> ThreatGraphResult:
+        """Main entry point: multi-track threat analysis."""
+        sys.stdout.write(f"PHISHGUARD_DEBUG: analyze called for {domain_or_url}\n")
+        sys.stdout.flush()
+        if not self._started:
+            await self.startup()
+        # Extract hostname if full URL provided
+        domain = domain_or_url
+        if "://" in domain:
+            from urllib.parse import urlparse
+            try:
+                domain = urlparse(domain).netloc
+                # Remove port if present
+                if ":" in domain:
+                    domain = domain.split(":")[0]
+            except Exception:
+                pass
 
-        NOW CHECKS REAL-TIME THREAT DATABASE FIRST!
-        
-        Returns ThreatGraphResult ready for Person 2 scoring.
-        """
         result = ThreatGraphResult(domain=domain)
+        logger.info(f"Analyzing domain: {domain} (original: {domain_or_url})")
 
         # Track 0: REAL-TIME THREAT CHECK (FASTEST!)
         try:
@@ -200,7 +257,6 @@ class ThreatGraphEngine:
                 result.threat_category = reputation.get("threat_type", "phishing")
                 result.threat_sources = reputation.get("sources", [])
                 result.intel_risk_score = max(result.intel_risk_score, reputation.get("risk_score", 0))
-                result.reasons.append(f"⚠️ KNOWN {result.threat_category.upper()} - Found in threat database!")
                 logger.info(f"REAL-TIME HIT: {domain} is known {result.threat_category}!")
         except Exception as e:
             logger.debug(f"Real-time check failed: {e}")
@@ -261,15 +317,26 @@ class ThreatGraphEngine:
         
         # Get embedding and update similarity index
         try:
-            embedding = await self.embedding_svc.get_embedding(domain)
+            embedding, gnn_prediction = await self.embedding_svc.get_embedding(domain)
+            result.gnn_score = max(result.gnn_score, gnn_prediction)
+            
             await self.similarity_svc.add_embedding(
                 domain,
                 embedding,
-                gnn_score=result.gnn_score,
+                gnn_score=gnn_prediction,
                 risk_label=final_label
             )
         except Exception as e:
             logger.warning(f"Failed to update embedding for {domain}: {e}")
+
+        # Final deduplication of reasons
+        seen = set()
+        unique = []
+        for r in result.reasons:
+            if r and r not in seen:
+                unique.append(r)
+                seen.add(r)
+        result.reasons = unique
 
         return result
 
@@ -284,21 +351,39 @@ class ThreatGraphEngine:
         self.embedding_svc.set_graph(self.graph_updater.graph)
         self.campaign_detector.update_graph(self.graph_updater.graph)
 
-        # 2. Generate embedding
-        embedding = await self.embedding_svc.get_embedding(domain)
-
+        # 2. Generate embedding + score
+        embedding, gnn_prediction = await self.embedding_svc.get_embedding(domain)
+        
         # 3. Find similar domains + cluster risk
         similar = await self.similarity_svc.find_similar(domain, embedding, k=5)
         cluster = await self.similarity_svc.get_cluster_risk(domain, embedding)
 
-        # GNN score = cluster probability weighted by similarity strength
+        # GNN score = mix of direct prediction + similarity-based score
+        # If similar domains are known malicious, boost the sim_score
         top_malicious = [s for s in similar if s.risk_label in ("HIGH", "MALICIOUS")]
-        gnn_score = 0.0
+        sim_score = 0.0
         if top_malicious:
-            gnn_score = sum(s.similarity * s.gnn_score for s in top_malicious[:3]) / 3
+            # Weight by similarity and give a floor to gnn_score for known malicious artifacts
+            weights = []
+            for s in top_malicious[:3]:
+                # If label is MALICIOUS, it means it's a confirmed threat
+                effective_score = max(s.gnn_score, 0.85 if s.risk_label == "MALICIOUS" else 0.6)
+                weights.append(s.similarity * effective_score)
+                logger.debug(f"Similar malicious: {s.domain} (label={s.risk_label}, sim={s.similarity:.3f}, gnn={s.gnn_score:.3f} -> effective={effective_score:.3f})")
+            
+            sim_score = sum(weights) / len(weights)
+            msg = f"PHISHGUARD_DEBUG: Boosted by similarity: sim_score={sim_score:.3f} (n={len(top_malicious)})\n"
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+
+        # Weighted fusion: direct GNN prediction is valuable, but similarity is safer for zero-days
+        final_gnn_score = (gnn_prediction * 0.4) + (sim_score * 0.6)
+        msg = f"PHISHGUARD_DEBUG: GNN Track result for {domain}: prediction={gnn_prediction:.3f}, sim_boost={sim_score:.3f}, final={final_gnn_score:.3f}\n"
+        sys.stdout.write(msg)
+        sys.stdout.flush()
 
         return {
-            "gnn_score": min(gnn_score, 1.0),
+            "gnn_score": min(final_gnn_score, 1.0),
             "similar_domains": similar,
             "cluster_probability": cluster["cluster_probability"]
         }
@@ -344,6 +429,9 @@ class ThreatGraphEngine:
                 )
 
     def _determine_label(self, result: ThreatGraphResult) -> str:
+        if result.known_malicious:
+            return "MALICIOUS"
+            
         combined = (result.infrastructure_risk_score + result.reputation_risk_score) / 2
         if combined >= 0.7:
             return "HIGH"
@@ -364,6 +452,44 @@ class ThreatGraphEngine:
         return len(campaigns)
 
     # ── Status & Health ───────────────────────────────────────────────────────
+
+    def get_visualization_data(self, limit: int = 50) -> dict:
+        """Export subgraph for frontend D3/Sigma.js visualization."""
+        graph = self.graph_updater.graph
+        
+        # Take top nodes with highest risk
+        nodes = []
+        node_ids = set()
+        
+        # Get all nodes with risk
+        all_nodes = []
+        for n, d in graph.nodes(data=True):
+            all_nodes.append((n, d))
+        
+        # Sort by gnn_score descending
+        all_nodes.sort(key=lambda x: x[1].get("gnn_score", 0.0), reverse=True)
+        
+        # Take top nodes
+        for n, d in all_nodes[:limit]:
+            nodes.append({
+                "id": str(n),
+                "label": str(n).replace("domain:", "").replace("ip:", "").replace("cert:", ""),
+                "type": d.get("node_type", "unknown"),
+                "risk": d.get("gnn_score", 0.0)
+            })
+            node_ids.add(n)
+
+        # Get edges between these nodes
+        edges = []
+        for u, v, d in graph.edges(data=True):
+            if u in node_ids and v in node_ids:
+                edges.append({
+                    "source": str(u),
+                    "target": str(v),
+                    "type": d.get("edge_type", "linked")
+                })
+
+        return {"nodes": nodes, "edges": edges}
 
     def health_check(self) -> dict:
         return {

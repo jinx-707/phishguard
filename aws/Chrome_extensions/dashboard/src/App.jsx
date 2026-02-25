@@ -8,7 +8,7 @@ import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Cart
 import './dashboard.css';
 
 // API Base URL - uses relative path for proxy support
-const API_BASE = '';
+const API_BASE = '/api/v1';
 
 // Colors
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'];
@@ -102,6 +102,7 @@ function Sidebar({ activeView, setActiveView, user, onLogout }) {
     { id: 'endpoints', icon: '💻', label: 'Endpoints' },
     { id: 'trends', icon: '📈', label: 'Trends' },
     { id: 'investigate', icon: '🔍', label: 'Investigate' },
+    { id: 'admin', icon: '⚙️', label: 'Admin' },
   ];
 
   return (
@@ -758,32 +759,309 @@ function InvestigateView({ token }) {
   );
 }
 
+// ============== ADMIN VIEW - Enterprise Overrides & Policy ==============
+
+function AdminView({ token }) {
+  const [policyMode, setPolicyMode] = useState('BALANCED');
+  const [overrides, setOverrides] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newOverride, setNewOverride] = useState({ domain: '', action: 'BLOCK', reason: '' });
+  const [saving, setSaving] = useState(false);
+
+  // Fetch policy mode and overrides
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [policyRes, overridesRes] = await Promise.all([
+          fetch(`${API_BASE}/admin/policy-mode`, { headers: { 'Authorization': `Bearer ${token}` } }),
+          fetch(`${API_BASE}/admin/overrides`, { headers: { 'Authorization': `Bearer ${token}` } })
+        ]);
+        
+        const policyData = await policyRes.json();
+        const overridesData = await overridesRes.json();
+        
+        setPolicyMode(policyData.policy_mode || 'BALANCED');
+        setOverrides(overridesData || []);
+      } catch (err) {
+        console.error('Failed to fetch admin data:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchData();
+  }, [token]);
+
+  // Update policy mode
+  const handlePolicyChange = async (newMode) => {
+    setSaving(true);
+    try {
+      await fetch(`${API_BASE}/admin/policy-mode`, {
+        method: 'PUT',
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ policy_mode: newMode })
+      });
+      setPolicyMode(newMode);
+    } catch (err) {
+      console.error('Failed to update policy:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Create override
+  const handleCreateOverride = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/admin/overrides`, {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(newOverride)
+      });
+      
+      if (res.ok) {
+        // Refresh overrides list
+        const overridesRes = await fetch(`${API_BASE}/admin/overrides`, { 
+          headers: { 'Authorization': `Bearer ${token}` } 
+        });
+        const overridesData = await overridesRes.json();
+        setOverrides(overridesData || []);
+        setShowCreateForm(false);
+        setNewOverride({ domain: '', action: 'BLOCK', reason: '' });
+      } else {
+        const error = await res.json();
+        alert(error.detail || 'Failed to create override');
+      }
+    } catch (err) {
+      console.error('Failed to create override:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Delete override
+  const handleDeleteOverride = async (id) => {
+    if (!confirm('Are you sure you want to delete this override?')) return;
+    
+    setSaving(true);
+    try {
+      await fetch(`${API_BASE}/admin/overrides/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      // Refresh list
+      const overridesRes = await fetch(`${API_BASE}/admin/overrides`, { 
+        headers: { 'Authorization': `Bearer ${token}` } 
+      });
+      const overridesData = await overridesRes.json();
+      setOverrides(overridesData || []);
+    } catch (err) {
+      console.error('Failed to delete override:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const getActionBadge = (action) => {
+    return action === 'ALLOW' 
+      ? <span className="action-badge allow">ALLOW</span>
+      : <span className="action-badge block">BLOCK</span>;
+  };
+
+  if (loading) return <div className="loading">Loading admin panel...</div>;
+
+  return (
+    <div className="admin-view">
+      <h2>⚙️ Admin - Enterprise Policy</h2>
+      
+      {/* Policy Mode Section */}
+      <div className="admin-section">
+        <h3>🛡️ Policy Mode</h3>
+        <p className="section-description">
+          Select how detection results are translated into blocking decisions.
+        </p>
+        
+        <div className="policy-modes">
+          <button 
+            className={`policy-btn ${policyMode === 'STRICT' ? 'active strict' : ''}`}
+            onClick={() => handlePolicyChange('STRICT')}
+            disabled={saving}
+          >
+            <span className="policy-icon">🔒</span>
+            <span className="policy-name">STRICT</span>
+            <span className="policy-desc">Block HIGH + MEDIUM</span>
+          </button>
+          
+          <button 
+            className={`policy-btn ${policyMode === 'BALANCED' ? 'active balanced' : ''}`}
+            onClick={() => handlePolicyChange('BALANCED')}
+            disabled={saving}
+          >
+            <span className="policy-icon">⚖️</span>
+            <span className="policy-name">BALANCED</span>
+            <span className="policy-desc">Block HIGH, Warn MEDIUM</span>
+          </button>
+          
+          <button 
+            className={`policy-btn ${policyMode === 'PERMISSIVE' ? 'active permissive' : ''}`}
+            onClick={() => handlePolicyChange('PERMISSIVE')}
+            disabled={saving}
+          >
+            <span className="policy-icon">🔓</span>
+            <span className="policy-name">PERMISSIVE</span>
+            <span className="policy-desc">Block known only</span>
+          </button>
+        </div>
+        
+        <div className="current-policy">
+          Current Policy: <strong>{policyMode}</strong>
+        </div>
+      </div>
+
+      {/* Overrides Section */}
+      <div className="admin-section">
+        <div className="section-header">
+          <h3>🚫 Enterprise Overrides</h3>
+          <button 
+            className="btn-primary"
+            onClick={() => setShowCreateForm(!showCreateForm)}
+          >
+            {showCreateForm ? 'Cancel' : '+ Add Override'}
+          </button>
+        </div>
+        
+        <p className="section-description">
+          Explicitly allow or block specific domains, overriding detection.
+        </p>
+
+        {/* Create Form */}
+        {showCreateForm && (
+          <form className="override-form" onSubmit={handleCreateOverride}>
+            <div className="form-row">
+              <input
+                type="text"
+                placeholder="domain.com"
+                value={newOverride.domain}
+                onChange={(e) => setNewOverride({...newOverride, domain: e.target.value})}
+                required
+              />
+              <select
+                value={newOverride.action}
+                onChange={(e) => setNewOverride({...newOverride, action: e.target.value})}
+              >
+                <option value="BLOCK">BLOCK</option>
+                <option value="ALLOW">ALLOW</option>
+              </select>
+            </div>
+            <div className="form-row">
+              <input
+                type="text"
+                placeholder="Reason (optional)"
+                value={newOverride.reason}
+                onChange={(e) => setNewOverride({...newOverride, reason: e.target.value})}
+              />
+              <button type="submit" className="btn-primary" disabled={saving}>
+                {saving ? 'Creating...' : 'Create Override'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Overrides Table */}
+        <div className="overrides-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Action</th>
+                <th>Reason</th>
+                <th>Created By</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {overrides.length === 0 ? (
+                <tr>
+                  <td colSpan="6" className="empty-message">No overrides configured</td>
+                </tr>
+              ) : (
+                overrides.map(override => (
+                  <tr key={override.id}>
+                    <td className="domain-cell">{override.domain}</td>
+                    <td>{getActionBadge(override.action)}</td>
+                    <td className="reason-cell">{override.reason || '-'}</td>
+                    <td>{override.created_by}</td>
+                    <td>{new Date(override.created_at).toLocaleDateString()}</td>
+                    <td>
+                      <button 
+                        className="btn-delete"
+                        onClick={() => handleDeleteOverride(override.id)}
+                        disabled={saving}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ============== MAIN APP ==============
 
 function App() {
-  const [token, setToken] = useState(localStorage.getItem('phishguard_token'));
-  const [user, setUser] = useState(() => {
-    const stored = localStorage.getItem('phishguard_user');
-    return stored ? JSON.parse(stored) : null;
-  });
   const [activeView, setActiveView] = useState('overview');
+  const [token, setToken] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  const handleLogin = (newToken, newUser) => {
-    localStorage.setItem('phishguard_token', newToken);
-    localStorage.setItem('phishguard_user', JSON.stringify(newUser));
-    setToken(newToken);
-    setUser(newUser);
-  };
+  // Auto-login on startup
+  useEffect(() => {
+    const login = async () => {
+      try {
+        const formData = new URLSearchParams();
+        formData.append('username', 'admin');
+        formData.append('password', 'admin123');
+        
+        const response = await fetch(`${API_BASE}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: formData
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          setToken(data.access_token);
+        }
+      } catch (err) {
+        console.error('Auto-login failed:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    login();
+  }, []);
 
-  const handleLogout = () => {
-    localStorage.removeItem('phishguard_token');
-    localStorage.removeItem('phishguard_user');
-    setToken(null);
-    setUser(null);
-  };
+  // Default user (no login page)
+  const user = { full_name: 'Security Admin', role: 'admin' };
 
-  if (!token || !user) {
-    return <Login onLogin={handleLogin} />;
+  if (loading) {
+    return <div className="loading">Loading PhishGuard...</div>;
   }
 
   const renderView = () => {
@@ -802,6 +1080,8 @@ function App() {
         return <TrendsView token={token} />;
       case 'investigate':
         return <InvestigateView token={token} />;
+      case 'admin':
+        return <AdminView token={token} />;
       default:
         return <OverviewDashboard token={token} />;
     }
@@ -813,7 +1093,6 @@ function App() {
         activeView={activeView} 
         setActiveView={setActiveView} 
         user={user}
-        onLogout={handleLogout}
       />
       <main className="main-content">
         <header className="main-header">

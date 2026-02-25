@@ -23,7 +23,7 @@ _base_estimator = None  # cache
 def load_base_estimator():
     """
     Loads and caches the underlying LogisticRegression
-    from the calibrated pipeline.
+    from the calibrated pipeline or calibrated classifier.
     """
     global _base_estimator
 
@@ -34,12 +34,22 @@ def load_base_estimator():
         active = json.load(f)
 
     model_path = MODEL_DIR / active["phish_model"]
-    pipeline = load(model_path)
+    loaded = load(model_path)
 
-    calibrated = pipeline.named_steps["clf"]
+    # Handle both Pipeline and direct CalibratedClassifierCV
+    if hasattr(loaded, 'named_steps'):
+        # It's a Pipeline
+        calibrated = loaded.named_steps["clf"]
+    else:
+        # It's a CalibratedClassifierCV directly
+        calibrated = loaded
 
     # Extract underlying logistic regression
-    _base_estimator = calibrated.calibrated_classifiers_[0].estimator
+    if hasattr(calibrated, 'calibrated_classifiers_'):
+        _base_estimator = calibrated.calibrated_classifiers_[0].estimator
+    else:
+        # Fallback: it's already the base estimator
+        _base_estimator = calibrated
 
     return _base_estimator
 

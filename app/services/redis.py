@@ -10,13 +10,14 @@ from app.config import settings
 
 logger = structlog.get_logger(__name__)
 
-# Global Redis client
+# Global Redis clients
 redis_client = None
+raw_redis_client = None
 
 
 async def init_redis():
-    """Initialize Redis connection."""
-    global redis_client
+    """Initialize Redis connections."""
+    global redis_client, raw_redis_client
     
     redis_client = redis.from_url(
         settings.REDIS_URL,
@@ -24,8 +25,14 @@ async def init_redis():
         decode_responses=True,
     )
     
-    # Test connection
+    raw_redis_client = redis.from_url(
+        settings.REDIS_URL,
+        decode_responses=False,
+    )
+    
+    # Test connections
     await redis_client.ping()
+    await raw_redis_client.ping()
     logger.info("Redis initialized", url=settings.REDIS_URL)
 
 
@@ -38,11 +45,19 @@ async def close_redis():
 
 
 async def get_redis_client() -> redis.Redis:
-    """Get Redis client instance."""
+    """Get Redis client instance (decoded)."""
     global redis_client
     if redis_client is None:
         await init_redis()
     return redis_client
+
+
+async def get_raw_redis_client() -> redis.Redis:
+    """Get raw Redis client instance (binary)."""
+    global raw_redis_client
+    if raw_redis_client is None:
+        await init_redis()
+    return raw_redis_client
 
 
 async def get_cache(key: str) -> Optional[Any]:
